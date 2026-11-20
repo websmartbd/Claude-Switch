@@ -2,7 +2,7 @@
 
 > **The definitive multi-account switcher and rate-limit manager for Claude.ai. Seamlessly switch accounts in one click or keyboard shortcut, track quota resets in real time, and receive desktop notifications the moment your limits expire.**
 
-[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg?style=for-the-badge)](https://github.com/)
+[![Version](https://img.shields.io/badge/version-1.1.1-blue.svg?style=for-the-badge)](https://github.com/)
 [![Manifest V3](https://img.shields.io/badge/Manifest-V3-orange.svg?style=for-the-badge)](https://developer.chrome.com/docs/extensions/mv3/intro/)
 [![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC_BY--NC_4.0-lightgrey.svg?style=for-the-badge)](https://creativecommons.org/licenses/by-nc/4.0/)
 [![Compatible with Chromium](https://img.shields.io/badge/Chromium-Chrome%20%7C%20Brave%20%7C%20Edge%20%7C%20Arc-brightgreen.svg?style=for-the-badge)]()
@@ -41,9 +41,9 @@
 If you use multiple Claude accounts (personal, work, development, client-specific), logging out, checking emails for magic links, or completing Google Auth every time you hit a rate limit is tedious and disrupts your workflow. **Claude Switch** completely eliminates this friction:
 
 - It holds your authenticated sessions simultaneously in an isolated local store.
-- It swaps cookies in **< 150 milliseconds**, seamlessly redirecting you into a clean chat under the selected profile.
-- It tracks usage limits and displays live countdowns for Free, Pro, Team, and Max accounts.
-- When an account's message limit resets, your operating system receives a native notification so you can instantly resume chatting.
+- It switches the active Claude session by replacing the relevant Claude cookies and verifying the resulting identity.
+- It displays available usage snapshots for supported paid plans and detects some Free limit messages shown in the Claude page.
+- When a detected reset time is reached, your operating system can receive a native notification.
 
 ---
 
@@ -51,23 +51,23 @@ If you use multiple Claude accounts (personal, work, development, client-specifi
 
 | Feature | Standard Browser | Claude Switch |
 |---|---|---|
-| **Simultaneous Accounts** | ❌ Log out & log in manually | ✅ Unlimited accounts stored & active |
-| **Switch Duration** | ~30–60 seconds | **< 150 milliseconds** |
+| **Simultaneous Accounts** | ❌ Log out & log in manually | ✅ Multiple accounts stored locally |
+| **Switch Duration** | Manual sign-in flow | Depends on cookie restore and Claude verification |
 | **Keyboard Switching** | ❌ None | ✅ `Ctrl + Shift + 1` .. `9` anywhere |
-| **Rate Limit Awareness** | ❌ Trial and error | ✅ Live countdown + red status ring |
-| **Reset Notifications** | ❌ None | ✅ Native desktop push on exact reset |
-| **Privacy & Storage** | Varies | 🔒 100% Local sandbox; zero external calls |
+| **Rate Limit Awareness** | ❌ Trial and error | ✅ Usage snapshots + detected Free reset countdown |
+| **Reset Notifications** | ❌ None | ✅ Scheduled desktop reminder after a detected reset time |
+| **Privacy & Storage** | Varies | Local Chrome profile storage; communicates with Claude first-party endpoints |
 
 ---
 
 ## ✨ Key Features
 
-- 🔄 **One-Click Instant Switching:** Effortlessly jump between accounts from the sidebar avatar or the toolbar popup.
+- 🔄 **One-Click Account Switching:** Request a switch from the in-page control or toolbar popup; the extension verifies the target account before reporting success.
 - ⚡ **Global Shortcuts (`Ctrl + Shift + 1..9`):** Switch profiles immediately from anywhere on `claude.ai`, even while typing inside the prompt box.
-- ⏱️ **Real-Time Free Limit Countdown:** Automatically parses Claude's rate limit notices (*"You are out of free messages until 5:20 PM"*) and computes a dynamic percentage bar and remaining time (`100% · in 1h 45m`).
-- 🔔 **Instant Desktop Notifications:** Receive a desktop push notification the exact minute an account resets:
+- ⏱️ **Detected Free Limit Countdown:** Automatically parses Claude's rate limit notices (*"You are out of free messages until 5:20 PM"*) and computes a dynamic percentage bar and remaining time (`100% · in 1h 45m`).
+- 🔔 **Instant Desktop Notifications:** Receive a desktop notification when an account reaches its scheduled reset time:
   > *"Your (Nickname) (Plan) claude account limit has been reset"*  
-  Clicking the notification directly opens a fresh chat tab.
+  Clicking a reset notification first requests a switch to the associated saved account; a new chat tab opens only if the switch succeeds.
 - 📊 **Pro & Max Quotas:** Displays 5-hour rolling session and 7-day weekly utilization metrics for paid tiers.
 - 🎨 **Visual Status Avatars:**
   - 🟢 **Normal / Ready:** Account is ready to chat.
@@ -85,7 +85,7 @@ Claude Switch achieves seamless switching through a combination of low-level Chr
 ### 1. Cookie Jar & Session Virtualization
 Claude.ai authenticates requests using HTTP-only session cookies (`sessionKey`, `lastActiveOrg`).
 - When you add an account, the background service worker takes a snapshot of Claude's active cookies using `chrome.cookies.getAll()`.
-- The snapshot is serialized into an encrypted profile entry inside `chrome.storage.local`.
+- The snapshot is serialized into the extension's `chrome.storage.local` profile. **This is not encryption at rest**; anyone or any software with access to the same browser profile may be able to access these session credentials.
 - When switching from Account A to Account B:
   1. The extension snapshots and saves Account A's current session tokens.
   2. It cleans Claude's session cookies.
@@ -99,7 +99,7 @@ If an extension clears all cookies blindly, Cloudflare will trigger a CAPTCHA ch
 **Claude Switch solves this:** The internal `PRESERVED_COOKIES` whitelist leaves Cloudflare clearance tokens untouched during cookie swapping, ensuring you never face unnecessary CAPTCHA puzzles when toggling accounts.
 
 ### 3. Intelligent Rate Limit Detection & Expiry Engine
-Claude's official `/usage` endpoint does not provide rolling quotas for Free accounts. Claude Switch solves this with a real-time DOM intelligence engine:
+Claude's official `/usage` endpoint may not expose the Free-account message window in the same form as paid-plan usage. Claude Switch attempts to detect supported rate-limit text in the page DOM; this is best-effort and can break when Claude changes its UI:
 - A `MutationObserver` continuously scans page banners and alert containers for strings matching:  
   `out of (?:free )?messages until ([0-9]{1,2}:[0-9]{2}(?: AM|PM)?)`
 - When detected, the text (e.g. `5:20 PM`) is parsed into an absolute UNIX timestamp (`resetsAt`).
@@ -218,8 +218,8 @@ Authentication tokens grant access to your private AI conversations. Claude Swit
 - ❌ **No Analytics / Telemetry:** No Google Analytics, no Mixpanel, no Sentry, no remote beacons.
 - ❌ **No External Servers:** The extension does not own, manage, or contact any backend server.
 - 🌐 **Direct First-Party Connections Only:** Network requests (`fetch`) communicate solely with `https://claude.ai/*`.
-- 🗄️ **Local Sandbox Storage:** All authentication tokens, labels, and rate-limit metadata are stored in your browser's private `chrome.storage.local` sandbox.
-- 👁️ **100% Auditable:** The entire codebase is completely open-source. Every line of code can be inspected directly in this repository.
+- 🗄️ **Local Profile Storage:** Authentication cookies, labels, and rate-limit metadata are stored in `chrome.storage.local`. This is not a secure enclave or encryption-at-rest mechanism; treat the browser profile as sensitive.
+- 👁️ **Source Available for Inspection:** The JavaScript extension files are included in this repository. The distributed files are bundled JavaScript; original TypeScript source maps and a complete TypeScript source tree are not included.
 
 ---
 
@@ -281,3 +281,18 @@ Review the full terms in the [LICENSE](LICENSE) file.
 ## ⚠️ Disclaimer
 
 *Claude Switch is an independent open-source tool developed by the community. It is **not** an official product of Anthropic, PBC and is not affiliated with, sponsored by, or endorsed by Anthropic, PBC. "Claude", "Claude.ai", and related marks are trademarks of Anthropic, PBC.*
+
+
+## 1.1.1 maintenance update
+
+- Persists cookie `storeId` and `partitionKey` metadata when the browser exposes them, so restoration receives the same context.
+- Refreshes account identity, plan, and organization metadata after a successful session verification.
+- Reset notification clicks cancel an in-progress add-account flow before switching to the notification account; an existing `/new` tab is reused instead of opening a duplicate.
+- Rejects invalid clock values, removes the broad `body.innerText` fallback, and ignores synthetic clicks/keyboard events in the in-page controls.
+- Serializes free-limit writes through the background worker to prevent multi-tab cache overwrites, persists notification state, and clears stale reset alarms.
+- Caps the popup height at 590px.
+- Security note: cookies remain sensitive session credentials in local Chrome profile storage. This project does not provide encryption-at-rest.
+
+## Testing notes
+
+The release package is checked for JavaScript syntax, valid Manifest V3 JSON, referenced local assets, and ZIP integrity. Live authentication, account switching, Claude usage endpoints, and browser notification behavior require manual testing in a signed-in Chrome profile; they cannot be truthfully certified by static checks alone.

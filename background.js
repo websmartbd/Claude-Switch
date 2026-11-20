@@ -133,13 +133,20 @@ var AccountStore = class {
     });
     return out;
   }
-  async setCookies(id, cookies, now2) {
+  async setCookies(id, cookies, now2, identity = null) {
     await this.update((s) => {
       const a = s.accounts[id];
       if (!a) return;
       a.cookies = cookies;
       a.savedAt = now2;
       a.status = "ok";
+      // Refresh account/org metadata after every successful identity check.
+      if (identity && identity.accountUuid === id) {
+        a.email = identity.email;
+        a.name = identity.name;
+        a.plan = identity.plan;
+        a.orgUuid = identity.orgUuid;
+      }
     });
   }
   async setActive(id) {
@@ -325,6 +332,8 @@ function toStored(c) {
     hostOnly: c.hostOnly
   };
   if (c.expirationDate !== void 0) s.expirationDate = c.expirationDate;
+  if (c.storeId !== void 0) s.storeId = c.storeId;
+  if (c.partitionKey !== void 0) s.partitionKey = structuredClone(c.partitionKey);
   return s;
 }
 function cookieUrl(c) {
@@ -349,7 +358,11 @@ async function snapshot() {
 async function clear() {
   const doomed = await claudeCookies();
   await Promise.all(
-    doomed.map((c) => chrome.cookies.remove({ url: cookieUrl(c), name: c.name, ...c.storeId ? { storeId: c.storeId } : {} }))
+    doomed.map((c) => chrome.cookies.remove({
+      url: cookieUrl(c), name: c.name,
+      ...(c.storeId !== void 0 ? { storeId: c.storeId } : {}),
+      ...(c.partitionKey !== void 0 ? { partitionKey: c.partitionKey } : {})
+    }))
   );
   return doomed.length;
 }
@@ -368,6 +381,8 @@ async function restore(cookies, nowMs = Date.now()) {
     };
     if (!c.hostOnly) details.domain = c.domain;
     if (c.expirationDate !== void 0) details.expirationDate = c.expirationDate;
+    if (c.storeId !== void 0) details.storeId = c.storeId;
+    if (c.partitionKey !== void 0) details.partitionKey = c.partitionKey;
     const set = await chrome.cookies.set(details);
     if (!set) throw new Error(`Chrome refused to restore cookie ${c.name}`);
     restored++;
@@ -510,7 +525,7 @@ var Switcher = class {
       return failure(`The saved session belongs to ${identity.email}`, await rollback());
     }
     try {
-      await store2.setCookies(accountId, await jar.snapshot(), now2());
+      await store2.setCookies(accountId, await jar.snapshot(), now2(), identity);
       await store2.setActive(accountId);
     } catch (e) {
       return failure(message(e), await rollback());
@@ -872,6 +887,8 @@ var REQUEST_TYPES = {
   "account:remove": true,
   "account:reorder": true,
   "prefs:update": true,
+  "freeLimit:set": true,
+  "freeLimit:clear": true,
   "rescue:get": true,
   "rescue:openAs": true
 };
@@ -880,6 +897,8 @@ var PAGE_REQUESTS = /* @__PURE__ */ new Set([
   "rescue:get",
   "switch",
   "addAccount:start",
+  "freeLimit:set",
+  "freeLimit:clear",
   "rescue:openAs"
 ]);
 function fromPage(sender) {
@@ -920,6 +939,18 @@ async function refreshUsage(deps, maxAgeMs) {
   if (await deps.addFlow.isWaiting()) return false;
   return deps.usage.refreshActive(maxAgeMs);
 }
+var freeLimitWriteQueue = createSerialQueue();
+async function updateFreeLimit(accountId, record) {
+  return freeLimitWriteQueue(async () => {
+    const current = (await chrome.storage.local.get(FREE_LIMITS_KEY))[FREE_LIMITS_KEY] || {};
+    const next = { ...current };
+    if (record) next[accountId] = record;
+    else delete next[accountId];
+    await chrome.storage.local.set({ [FREE_LIMITS_KEY]: next });
+    return next;
+  });
+}
+
 function createRouter(deps) {
   const ok = (data) => ({ ok: true, data });
   const fail = (error) => ({ ok: false, error });
@@ -964,6 +995,8 @@ function createRouter(deps) {
         return mutate(async () => {
           await deps.store.remove(req.accountId);
           await deps.usage.forget(req.accountId);
+          await updateFreeLimit(req.accountId, null);
+          await chrome.alarms.clear(`reset:${req.accountId}`);
         });
       case "account:reorder":
         return mutate(() => deps.store.reorder(req.order));
@@ -972,6 +1005,14 @@ function createRouter(deps) {
           await deps.store.updatePrefs(req.patch);
           await deps.usage.updateBadge();
         });
+      case "freeLimit:set":
+        if (typeof req.accountId !== "string" || !req.accountId || !req.record || typeof req.record.resetsAt !== "number") return fail("Invalid free-limit record");
+        await updateFreeLimit(req.accountId, req.record);
+        return ok(null);
+      case "freeLimit:clear":
+        if (typeof req.accountId !== "string" || !req.accountId) return fail("Invalid account ID");
+        await updateFreeLimit(req.accountId, null);
+        return ok(null);
       case "rescue:get": {
         const tabId = sender.tab?.id;
         return ok(tabId === void 0 ? null : await deps.rescue.info(tabId));
@@ -1092,7 +1133,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
   if (alarm.name.startsWith("reset:")) {
     const accountId = alarm.name.slice(6);
-    void notifyLimitReset(accountId);
+    void processLimitReset(accountId);
   }
 });
 
@@ -1104,46 +1145,59 @@ async function notifyLimitReset(accountId) {
     const s = await store.load();
     const account = s.accounts[accountId];
     if (!account) return;
-
-    const allLimits = (await chrome.storage.local.get(FREE_LIMITS_KEY))[FREE_LIMITS_KEY] || {};
-    if (allLimits[accountId]) {
-      delete allLimits[accountId];
-      await chrome.storage.local.set({ [FREE_LIMITS_KEY]: allLimits });
-    }
-
     const nickname = account.label || account.name || "Claude";
     const plan = account.plan || "Free";
-
-    chrome.notifications.create(`reset-notif-${accountId}-${Date.now()}`, {
+    await chrome.notifications.create(`reset-notif-${accountId}`, {
       type: "basic",
       iconUrl: "icons/icon-128.png",
       title: "Claude Switch",
       message: `Your ${nickname} ${plan} claude account limit has been reset`,
       priority: 2
     });
-
     await broadcast();
   } catch (e) {
     console.warn("Could not send limit reset notification", e);
   }
 }
 
+var resetProcessing = new Set();
+async function processLimitReset(accountId) {
+  if (resetProcessing.has(accountId)) return;
+  resetProcessing.add(accountId);
+  try {
+    const shouldNotify = await freeLimitWriteQueue(async () => {
+      const allLimits = (await chrome.storage.local.get(FREE_LIMITS_KEY))[FREE_LIMITS_KEY] || {};
+      const fl = allLimits[accountId];
+      if (!fl || fl.notified) return false;
+      const next = { ...allLimits, [accountId]: { ...fl, notified: true } };
+      await chrome.storage.local.set({ [FREE_LIMITS_KEY]: next });
+      return true;
+    });
+    await chrome.alarms.clear(`reset:${accountId}`);
+    if (shouldNotify) await notifyLimitReset(accountId);
+  } finally {
+    resetProcessing.delete(accountId);
+  }
+}
+
 async function scheduleLimitAlarms() {
   try {
     const allLimits = (await chrome.storage.local.get(FREE_LIMITS_KEY))[FREE_LIMITS_KEY] || {};
+    const existing = await chrome.alarms.getAll();
+    const expected = new Set();
     const nowMs = Date.now();
     for (const [accountId, fl] of Object.entries(allLimits)) {
-      if (!fl || !fl.resetsAt) continue;
+      if (!fl || typeof fl.resetsAt !== "number") continue;
       const alarmName = `reset:${accountId}`;
+      if (fl.notified) continue;
+      expected.add(alarmName);
       if (fl.resetsAt <= nowMs) {
-        if (!fl.notified) {
-          fl.notified = true;
-          await notifyLimitReset(accountId);
-        }
+        await processLimitReset(accountId);
       } else {
-        chrome.alarms.create(alarmName, { when: fl.resetsAt });
+        await chrome.alarms.create(alarmName, { when: fl.resetsAt });
       }
     }
+    await Promise.all(existing.filter((a) => a.name.startsWith("reset:") && !expected.has(a.name)).map((a) => chrome.alarms.clear(a.name)));
   } catch (e) {
     console.warn("Could not schedule limit alarms", e);
   }
@@ -1156,9 +1210,31 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 
 chrome.notifications.onClicked.addListener((notifId) => {
-  if (notifId.startsWith("reset-notif-")) {
-    chrome.tabs.create({ url: "https://claude.ai/new" });
-  }
+  if (!notifId.startsWith("reset-notif-")) return;
+  const accountId = notifId.slice("reset-notif-".length);
+  // A reset notification belongs to a specific account. Switch first; never
+  // open a fresh tab under whichever account happens to be active.
+  void (async () => {
+    if (await addFlow.isWaiting()) {
+      await switcher.idle();
+      await addFlow.cancel();
+    }
+    const result = await switcher.switchTo(accountId);
+    if (result?.status === "switched") {
+      const claudeTabs = await chrome.tabs.query({ url: CLAUDE_TAB_PATTERN });
+      const existingNewTab = claudeTabs.find((tab) => {
+        try { return new URL(tab.url || "").pathname.replace(/\/$/, "") === "/new"; }
+        catch { return false; }
+      });
+      if (existingNewTab?.id !== void 0) await chrome.tabs.update(existingNewTab.id, { active: true });
+      else await chrome.tabs.create({ url: "https://claude.ai/new", active: true });
+    } else {
+      await chrome.notifications.create(`switch-failed-${Date.now()}`, {
+        type: "basic", iconUrl: "icons/icon-128.png", title: "Claude Switch",
+        message: "Could not switch to the account whose limit reset. Open Claude Switch to check its status.", priority: 1
+      });
+    }
+  })().catch((e) => console.warn("Could not open reset account", e));
 });
 
 var restoreBadge = () => {

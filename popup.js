@@ -138,7 +138,7 @@
     }).join("");
     const seg = (pref, options, current) => `<div class="seg" role="group" aria-label="${pref}">${options.map(([value, text]) => `<button data-action="pref" data-pref="${pref}" data-value="${value}" aria-pressed="${value === current}">${text}</button>`).join("")}</div>`;
     const toggle = (pref, label) => `<div class="prefrow"><span>${label}</span><button class="switch" role="switch" data-action="toggle" data-pref="${pref}" aria-checked="${s.prefs[pref]}" aria-label="${label}"></button></div>`;
-    return `${head("Manage", true)}<div class="pane">${rows || `<p class="muted">No accounts yet.</p>`}</div><hr class="divider"><div class="pane prefs"><div class="prefrow"><span>Theme</span>${seg("theme", [["system", "system"], ["dark", "dark"], ["light", "light"]], s.prefs.theme)}</div><div class="prefrow"><span>Style</span>${seg("style", [["app", "Claude"], ["cli", "CLI"]], s.prefs.style)}</div>${toggle("inPageSwitcher", "Switcher on claude.ai")}${toggle("badge", "Usage badge on the toolbar icon")}<p class="muted note">Saved sessions are stored unencrypted in this Chrome profile. Removing an account only forgets it here; it doesn't log you out.</p></div>`;
+    return `${head("Manage", true)}<div class="pane">${rows || `<p class="muted">No accounts yet.</p>`}</div><hr class="divider"><div class="pane prefs"><div class="prefrow"><span>Theme</span>${seg("theme", [["system", "system"], ["dark", "dark"], ["light", "light"]], s.prefs.theme)}</div>${toggle("inPageSwitcher", "Switcher on claude.ai")}${toggle("badge", "Usage badge on the toolbar icon")}<p class="muted note">Saved sessions are stored unencrypted in this Chrome profile. Removing an account only forgets it here; it doesn't log you out.</p></div>`;
   }
   var withBanner = (html, error) => error ? html.replace("</header>", () => `</header><div class="error" role="alert">${esc(error)}</div>`) : html;
   function render(s, v, now, localError = null) {
@@ -154,7 +154,7 @@
     const html = doc.documentElement;
     if (s.prefs.theme === "system") html.removeAttribute("data-theme");
     else html.setAttribute("data-theme", s.prefs.theme);
-    html.setAttribute("data-style", s.prefs.style);
+    html.setAttribute("data-style", "app"); // always Claude style
   }
   var isEditable = (t) => t instanceof HTMLElement && (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName));
   function mount(root, send, initial, now = Date.now) {
