@@ -14,6 +14,11 @@
   // src/shared/html.ts
   var ENTITIES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
   function esc(s) {
+    if (s == null) return "";
+    if (typeof s !== "string") {
+      if (typeof s === "object" && s.time) return esc(s.time);
+      return String(s);
+    }
     return s.replace(/[&<>"']/g, (c) => ENTITIES[c] ?? c);
   }
   function avatarHtml(label, color) {
@@ -33,6 +38,11 @@
   chrome.storage.local.get(FREE_LIMITS_KEY).then((got) => {
     if (got && got[FREE_LIMITS_KEY]) popupFreeLimits = got[FREE_LIMITS_KEY];
   }).catch(() => void 0);
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === "local" && changes[FREE_LIMITS_KEY]) {
+      popupFreeLimits = changes[FREE_LIMITS_KEY].newValue || {};
+    }
+  });
 
   // src/shared/usageFormat.ts
   function levelOf(percent) {
@@ -78,12 +88,13 @@
       const fl = popupFreeLimits[a.id];
       if (fl && fl.resetsAt) {
         const remainingMs = fl.resetsAt - now;
-        if (remainingMs <= 0 || remainingMs > 5.5 * 3600 * 1000) {
+        if (remainingMs <= 0 || remainingMs > 24 * 3600 * 1000) {
           delete popupFreeLimits[a.id];
           chrome.storage.local.set({ [FREE_LIMITS_KEY]: popupFreeLimits }).catch(() => void 0);
           return "";
         }
-        return `<span class="usage" title="Free message limit reached"><span class="u crit"><span class="ul">limit</span> <span class="num">100%</span><span class="ubar"><i style="width:100%"></i></span></span><span class="asof"> \xB7 resets ${esc(fl.timeStr)}</span></span>`;
+        const resetStr = (typeof fl.timeStr === "string" ? fl.timeStr : fl.timeStr?.time) || formatReset(fl.resetsAt, now);
+        return `<span class="usage" title="Free message limit reached"><span class="u crit"><span class="ul">limit</span> <span class="num">100%</span><span class="ubar"><i style="width:100%"></i></span></span><span class="asof"> \xB7 resets ${esc(resetStr)}</span></span>`;
       }
       return "";
     }
@@ -330,6 +341,12 @@
       const push = msg;
       if (push?.type === "state") app.update(push.state);
       return false;
+    });
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area === "local" && changes[FREE_LIMITS_KEY]) {
+        popupFreeLimits = changes[FREE_LIMITS_KEY].newValue || {};
+        app.update(app.current());
+      }
     });
     setInterval(() => app.update(app.current()), 5e3);
   })();

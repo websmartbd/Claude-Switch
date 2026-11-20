@@ -14,6 +14,11 @@
   // src/shared/html.ts
   var ENTITIES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
   function esc(s) {
+    if (s == null) return "";
+    if (typeof s !== "string") {
+      if (typeof s === "object" && s.time) return esc(s.time);
+      return String(s);
+    }
     return s.replace(/[&<>"']/g, (c) => ENTITIES[c] ?? c);
   }
   function avatarHtml(label, color) {
@@ -48,30 +53,20 @@
     if (meridiem === "PM" && hours < 12) hours += 12;
     if (meridiem === "AM" && hours === 12) hours = 0;
 
-    // If Claude explicitly said "tomorrow", force next day
-    const baseDate = isTomorrow
-      ? new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, hours, minutes, 0, 0)
-      : new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes, 0, 0);
-
-    let target = baseDate;
+    let target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes, 0, 0);
     let diff = target.getTime() - now.getTime();
 
-    // If target is in the past and no explicit "tomorrow", try next day within 5.5h window
-    if (diff < 0 && !isTomorrow) {
-      const tomorrowTarget = new Date(target.getTime() + 24 * 3600 * 1000);
-      const tomorrowDiff = tomorrowTarget.getTime() - now.getTime();
-      if (tomorrowDiff <= 5.5 * 3600 * 1000) {
-        target = tomorrowTarget;
-        diff = tomorrowDiff;
-      } else {
-        return null;
-      }
+    if (isTomorrow || diff < 0) {
+      target = new Date(target.getTime() + 24 * 3600 * 1000);
+      diff = target.getTime() - now.getTime();
     }
 
-    // A valid Claude free limit reset MUST be within 5.5 hours from now
-    // Exception: if Claude explicitly said "tomorrow", trust it up to 24h
-    if (!isTomorrow && diff > 5.5 * 3600 * 1000) return null;
-    if (diff < 0) return null;
+    if (diff > 24 * 3600 * 1000) {
+      target = new Date(target.getTime() - 24 * 3600 * 1000);
+      diff = target.getTime() - now.getTime();
+    }
+
+    if (diff < 0 || diff > 24 * 3600 * 1000) return null;
 
     return target.getTime();
   }
@@ -79,79 +74,84 @@
   function detectPageRateLimit(doc) {
     // Priority 0 (most reliable): Claude rate limit message always contains a link to
     // support.claude.com about usage/length limits. Find that anchor then read its container.
-    for (const a of doc.querySelectorAll('a[href*="support.claude.com"]')) {
-      // Walk up to find the containing paragraph/div that holds the full message
+    for (const a of doc.querySelectorAll('a[href*="understanding-usage-and-length-limits"], a[href*="support.claude.com"], a[href*="support.anthropic.com"]')) {
       let node = a.parentElement;
       for (let i = 0; i < 6 && node; i++, node = node.parentElement) {
-        const t = node.textContent || "";
-        // Must mention "out of" or "limit" to avoid matching unrelated support links
-        if (!/out of|limit|messages?/i.test(t)) continue;
-        const result = extractResetTime(t);
-        if (result) return result;
+        const t = (node.textContent || "").replace(/\s+/g, " ").trim();
+        if (/out of|limit|messages?|resets?|try again/i.test(t)) {
+          const result = extractResetTime(t);
+          if (result) return result;
+        }
       }
     }
 
     // Priority 1: dedicated alert/banner/role elements
-    for (const sel of ['[role="alert"]', '[data-testid*="limit"]', '[data-testid*="banner"]', '[data-testid*="rate"]']) {
+    for (const sel of ['[role="alert"]', '[data-testid*="limit"]', '[data-testid*="banner"]', '[data-testid*="rate"]', 'div[class*="RateLimitError"]', 'div[class*="limit-banner"]']) {
       for (const el of doc.querySelectorAll(sel)) {
-        const t = el.textContent || "";
+        const t = (el.textContent || "").replace(/\s+/g, " ").trim();
         const result = extractResetTime(t);
         if (result) return result;
       }
     }
 
-    // Priority 2: disabled fieldset = input locked, look in nearby parent nodes for the time
+    // Priority 2: disabled fieldset = input locked, look in surrounding container
     for (const fs of doc.querySelectorAll("fieldset[disabled]")) {
       let node = fs.parentElement;
       for (let i = 0; i < 5 && node; i++, node = node.parentElement) {
-        const t = node.textContent || "";
-        if (t.length > 2000) break; // stop at big containers
+        const t = (node.textContent || "").replace(/\s+/g, " ").trim();
+        if (t.length > 2500) break;
         const result = extractResetTime(t);
         if (result) return result;
       }
     }
 
-    // Priority 3: short inline text nodes only (< 350 chars) to avoid chat history
-    for (const el of doc.querySelectorAll("p, div > span, div > p")) {
-      const t = el.textContent || "";
-      if (t.length > 350) continue;
-      const result = extractResetTime(t);
-      if (result) return result;
+    // Priority 3: short inline text nodes only (< 400 chars)
+    for (const el of doc.querySelectorAll("p, span, div")) {
+      if (el.children.length > 5) continue;
+      const t = (el.textContent || "").replace(/\s+/g, " ").trim();
+      if (t.length < 15 || t.length > 400) continue;
+      if (/out of (?:free )?messages|free message limit|try again|resets at|messages until/i.test(t)) {
+        const result = extractResetTime(t);
+        if (result) return result;
+      }
     }
 
     return null;
   }
 
   // Returns { time: "3:40 AM", tomorrow: true } or just "3:40 AM" string, or null
-  function extractResetTime(t) {
-    if (!t) return null;
-    const TIME_RE = /([0-9]{1,2}:[0-9]{2}(?:\s*[AaPp][Mm])?)/;
+  function extractResetTime(raw) {
+    if (!raw) return null;
+    const t = raw.replace(/\s+/g, " ").trim();
 
-    // "out of free messages until tomorrow at 3:40 AM"
-    let m = /(?:out of|no more)\s+(?:free\s+)?messages?[^.]*?until\s+(tomorrow\s+(?:at\s+)?)?/i.exec(t);
+    // 1. "out of [free] messages ... until [tomorrow] [at] HH:MM"
+    let m = /(?:out of|no more)\s+(?:free\s+)?messages?[^.]*?until\s+(?:(tomorrow)\s+(?:at\s+)?)?([0-9]{1,2}:[0-9]{2}(?:\s*[AaPp][Mm])?)/i.exec(t);
     if (m) {
-      const isTomorrow = /tomorrow/i.test(m[0]);
-      const after = t.slice((m.index ?? 0) + m[0].length);
-      const tMatch = TIME_RE.exec(after);
-      if (tMatch) return isTomorrow ? { time: tMatch[1].trim(), tomorrow: true } : tMatch[1].trim();
+      const isTomorrow = !!m[1];
+      return isTomorrow ? { time: m[2].trim(), tomorrow: true } : m[2].trim();
     }
 
-    // "reached / exceeded / hit ... limit ... until [tomorrow] HH:MM"
-    m = /(?:reached|exceeded|hit)\s+(?:your\s+)?(?:free\s+|daily\s+)?(?:message\s+|usage\s+)?limit[^.]*?until\s+(tomorrow\s+(?:at\s+)?)?/i.exec(t);
+    // 2. "reached / exceeded / hit ... limit ... until [tomorrow] [at] HH:MM"
+    m = /(?:reached|exceeded|hit)\s+[^.]*?(?:message\s+|usage\s+)?limit[^.]*?until\s+(?:(tomorrow)\s+(?:at\s+)?)?([0-9]{1,2}:[0-9]{2}(?:\s*[AaPp][Mm])?)/i.exec(t);
     if (m) {
-      const isTomorrow = /tomorrow/i.test(m[0]);
-      const after = t.slice((m.index ?? 0) + m[0].length);
-      const tMatch = TIME_RE.exec(after);
-      if (tMatch) return isTomorrow ? { time: tMatch[1].trim(), tomorrow: true } : tMatch[1].trim();
+      const isTomorrow = !!m[1];
+      return isTomorrow ? { time: m[2].trim(), tomorrow: true } : m[2].trim();
     }
 
-    // "resets / try again / available at [tomorrow] HH:MM"
-    m = /(?:resets?|try again|available again|come back)\s+(?:at|after|on)?\s*(tomorrow\s+(?:at\s+)?)?/i.exec(t);
+    // 3. "resets / try again / available [at|until] [tomorrow] [at] HH:MM"
+    m = /(?:resets?|try again|available again|come back)\s+(?:at|after|until|on)?\s*(?:(tomorrow)\s+(?:at\s+)?)?([0-9]{1,2}:[0-9]{2}(?:\s*[AaPp][Mm])?)/i.exec(t);
     if (m) {
-      const isTomorrow = /tomorrow/i.test(m[0]);
-      const after = t.slice((m.index ?? 0) + m[0].length);
-      const tMatch = TIME_RE.exec(after);
-      if (tMatch) return isTomorrow ? { time: tMatch[1].trim(), tomorrow: true } : tMatch[1].trim();
+      const isTomorrow = !!m[1];
+      return isTomorrow ? { time: m[2].trim(), tomorrow: true } : m[2].trim();
+    }
+
+    // 4. Generic "until [tomorrow] [at] HH:MM" if limit/message is mentioned
+    if (/limit|messages?/i.test(t)) {
+      m = /until\s+(?:(tomorrow)\s+(?:at\s+)?)?([0-9]{1,2}:[0-9]{2}(?:\s*[AaPp][Mm])?)/i.exec(t);
+      if (m) {
+        const isTomorrow = !!m[1];
+        return isTomorrow ? { time: m[2].trim(), tomorrow: true } : m[2].trim();
+      }
     }
 
     return null;
@@ -159,8 +159,10 @@
 
   async function syncFreeLimit(activeId, doc, onDetected) {
     if (!activeId) return;
-    const timeStr = detectPageRateLimit(doc);
-    if (!timeStr) {
+    const detected = detectPageRateLimit(doc); // string or { time, tomorrow } or null
+    // displayStr is always a plain string for storage/display
+    const displayStr = !detected ? null : (typeof detected === "object" ? detected.time : detected);
+    if (!displayStr) {
       const fl = cachedFreeLimits[activeId];
       if (fl && fl.resetsAt && Date.now() >= fl.resetsAt) {
         delete cachedFreeLimits[activeId];
@@ -169,7 +171,7 @@
       }
       return;
     }
-    const resetsAt = parseTimeToday(timeStr);
+    const resetsAt = parseTimeToday(detected); // pass full object so tomorrow is handled
     if (!resetsAt) {
       // timeStr has already passed, clear it!
       if (cachedFreeLimits[activeId]) {
@@ -179,6 +181,7 @@
       }
       return;
     }
+    const timeStr = String(displayStr);
     const prev = cachedFreeLimits[activeId];
     if (prev && prev.timeStr === timeStr && Math.abs(prev.resetsAt - resetsAt) < 60000) return;
     cachedFreeLimits[activeId] = { timeStr, resetsAt, detectedAt: Date.now() };
@@ -215,15 +218,16 @@
     if (fl && fl.resetsAt) {
       const nowMs = Date.now();
       const remainingMs = fl.resetsAt - nowMs;
-      // If time has passed OR if remaining time > 5.5 hours (invalid/corrupted stale data), clear it immediately!
-      if (remainingMs <= 0 || remainingMs > 5.5 * 3600 * 1000) {
+      // If time has passed OR if remaining time > 24 hours, clear it
+      if (remainingMs <= 0 || remainingMs > 24 * 3600 * 1000) {
         delete cachedFreeLimits[accountId];
         void sendToBackground({ type: "freeLimit:clear", accountId }).catch(() => void 0);
         return { ring: "", bar: fallbackBar };
       }
       const rst = fmtReset(fl.resetsAt, nowMs);
       const ring = " lv-crit";
-      const bar = `<span class="urow"><span class="ubar lv-crit" style="--p:100%"><i></i></span><span class="upct">100% \xB7 ${rst || fl.timeStr}</span></span>`;
+      const displayTime = (typeof fl.timeStr === "string" ? fl.timeStr : fl.timeStr?.time) || "";
+      const bar = `<span class="urow"><span class="ubar lv-crit" style="--p:100%"><i></i></span><span class="upct">100% \xB7 ${rst || displayTime}</span></span>`;
       return { ring, bar };
     }
     return { ring: "", bar: fallbackBar };
