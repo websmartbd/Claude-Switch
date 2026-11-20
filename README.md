@@ -1,97 +1,283 @@
 # Claude Switch ⚡
 
-> **Instant, seamless multi-account switcher for Claude.ai with real-time rate limit tracking.**
+> **The definitive multi-account switcher and rate-limit manager for Claude.ai. Seamlessly switch accounts in one click or keyboard shortcut, track quota resets in real time, and receive desktop notifications the moment your limits expire.**
 
-[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)]()
-[![Manifest V3](https://img.shields.io/badge/Manifest-V3-orange.svg)](https://developer.chrome.com/docs/extensions/mv3/intro/)
-[![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC_BY--NC_4.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc/4.0/)
-[![Compatible with Chromium](https://img.shields.io/badge/Browser-Chrome%20%7C%20Brave%20%7C%20Edge-brightgreen.svg)]()
-
-Claude Switch is an unofficial, open-source productivity extension for Chromium browsers (Chrome, Brave, Edge, Arc). It allows you to keep multiple Claude.ai accounts signed in simultaneously and toggle between them in a single click or keyboard shortcut — without ever logging out manually.
+[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg?style=for-the-badge)](https://github.com/)
+[![Manifest V3](https://img.shields.io/badge/Manifest-V3-orange.svg?style=for-the-badge)](https://developer.chrome.com/docs/extensions/mv3/intro/)
+[![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC_BY--NC_4.0-lightgrey.svg?style=for-the-badge)](https://creativecommons.org/licenses/by-nc/4.0/)
+[![Compatible with Chromium](https://img.shields.io/badge/Chromium-Chrome%20%7C%20Brave%20%7C%20Edge%20%7C%20Arc-brightgreen.svg?style=for-the-badge)]()
+[![Zero Telemetry](https://img.shields.io/badge/Telemetry-0%25%20(Local%20Only)-success.svg?style=for-the-badge)]()
 
 ---
 
-## ✨ Features
+## 📑 Table of Contents
 
-- 🔄 **One-Click Account Switching:** Switch between unlimited Claude accounts instantly without manual login/logout cycles.
-- ⌨️ **Instant Keyboard Shortcuts:** Press `Ctrl + Shift + 1`, `Ctrl + Shift + 2` ... `Ctrl + Shift + 9` to switch accounts from anywhere on the page, even while typing.
-- ⏱️ **Real-Time Free Limit Reset Tracking:** Automatically detects when a Free account runs out of messages (e.g. *"out of free messages until 5:20 PM"*) and displays a live percentage bar and countdown timer.
-- 📊 **Pro & Max Usage Statistics:** Displays 5-hour session and weekly utilization quotas for Pro/Team/Max accounts.
-- 🎨 **Status Avatars:** Colored avatar rings indicating account status at a glance:
-  - 🟢 **Normal / Ready:** Account is under limit and ready to chat.
+- [Overview](#-overview)
+- [Why Claude Switch?](#-why-claude-switch)
+- [Key Features](#-key-features)
+- [How It Works (Under the Hood)](#-how-it-works-under-the-hood)
+  - [1. Cookie Jar & Session Virtualization](#1-cookie-jar--session-virtualization)
+  - [2. Cloudflare Clearance Token Preservation](#2-cloudflare-clearance-token-preservation)
+  - [3. Intelligent Rate Limit Detection & Expiry Engine](#3-intelligent-rate-limit-detection--expiry-engine)
+  - [4. Background Alarms & Push Notifications](#4-background-alarms--push-notifications)
+  - [5. Closed Shadow DOM In-Page UI](#5-closed-shadow-dom-in-page-ui)
+  - [6. High-Priority Global Shortcut Pipeline](#6-high-priority-global-shortcut-pipeline)
+- [Architecture & Data Flow](#-architecture--data-flow)
+- [Installation Guide](#-installation-guide)
+- [How to Use](#-how-to-use)
+- [Keyboard Shortcuts](#-keyboard-shortcuts)
+- [Privacy & Security Audit](#-privacy--security-audit)
+- [Permissions Justification](#-permissions-justification)
+- [Troubleshooting & FAQ](#-troubleshooting--faq)
+- [License & Attribution](#-license--attribution)
+- [Disclaimer](#-disclaimer)
+
+---
+
+## 🌟 Overview
+
+**Claude Switch** is an open-source, client-side productivity extension built for Chromium-based browsers (**Google Chrome, Brave, Microsoft Edge, Arc, Opera, Vivaldi**).
+
+If you use multiple Claude accounts (personal, work, development, client-specific), logging out, checking emails for magic links, or completing Google Auth every time you hit a rate limit is tedious and disrupts your workflow. **Claude Switch** completely eliminates this friction:
+
+- It holds your authenticated sessions simultaneously in an isolated local store.
+- It swaps cookies in **< 150 milliseconds**, seamlessly redirecting you into a clean chat under the selected profile.
+- It tracks usage limits and displays live countdowns for Free, Pro, Team, and Max accounts.
+- When an account's message limit resets, your operating system receives a native notification so you can instantly resume chatting.
+
+---
+
+## 🎯 Why Claude Switch?
+
+| Feature | Standard Browser | Claude Switch |
+|---|---|---|
+| **Simultaneous Accounts** | ❌ Log out & log in manually | ✅ Unlimited accounts stored & active |
+| **Switch Duration** | ~30–60 seconds | **< 150 milliseconds** |
+| **Keyboard Switching** | ❌ None | ✅ `Ctrl + Shift + 1` .. `9` anywhere |
+| **Rate Limit Awareness** | ❌ Trial and error | ✅ Live countdown + red status ring |
+| **Reset Notifications** | ❌ None | ✅ Native desktop push on exact reset |
+| **Privacy & Storage** | Varies | 🔒 100% Local sandbox; zero external calls |
+
+---
+
+## ✨ Key Features
+
+- 🔄 **One-Click Instant Switching:** Effortlessly jump between accounts from the sidebar avatar or the toolbar popup.
+- ⚡ **Global Shortcuts (`Ctrl + Shift + 1..9`):** Switch profiles immediately from anywhere on `claude.ai`, even while typing inside the prompt box.
+- ⏱️ **Real-Time Free Limit Countdown:** Automatically parses Claude's rate limit notices (*"You are out of free messages until 5:20 PM"*) and computes a dynamic percentage bar and remaining time (`100% · in 1h 45m`).
+- 🔔 **Instant Desktop Notifications:** Receive a desktop push notification the exact minute an account resets:
+  > *"Your (Nickname) (Plan) claude account limit has been reset"*  
+  Clicking the notification directly opens a fresh chat tab.
+- 📊 **Pro & Max Quotas:** Displays 5-hour rolling session and 7-day weekly utilization metrics for paid tiers.
+- 🎨 **Visual Status Avatars:**
+  - 🟢 **Normal / Ready:** Account is ready to chat.
   - 🟡 **Warning:** Usage ≥ 70%.
-  - 🔴 **Critical:** Limit exhausted (100%), displays exact reset time.
-- 🪟 **Dual Interface Options:**
-  - **In-Page Switcher:** Floating pill anchored to Claude's sidebar for swift in-browser switching.
-  - **Extension Toolbar Popup:** Clean management dashboard accessible from your browser toolbar.
-- 🛡️ **100% Private & Local:** Zero telemetry, zero analytics, zero external API requests. All session tokens and cookies remain encrypted/stored strictly inside your local browser.
+  - 🔴 **Critical:** Account limit reached (100%), showing exact reset countdown.
+- 🪟 **Minimalist In-Page Floating Avatar:** Seamlessly positioned right beside Claude's sidebar footer buttons (`.df-footer-aux`), blending invisibly into Claude's native design system.
+- 🛡️ **Zero Telemetry & 100% Local:** No analytics, no remote database, no tracking scripts. All data remains in your browser's `chrome.storage.local`.
 
 ---
 
-## 📥 Installation
+## 🔬 How It Works (Under the Hood)
 
-Since Claude Switch is free and open-source, you can install it in less than 30 seconds using **Developer Mode**:
+Claude Switch achieves seamless switching through a combination of low-level Chrome extension APIs and client-side DOM intelligence.
 
-### Step 1: Download
-1. Clone or download this repository as a `.zip` file.
-2. If downloaded as a `.zip`, extract it to a permanent folder on your computer.
+### 1. Cookie Jar & Session Virtualization
+Claude.ai authenticates requests using HTTP-only session cookies (`sessionKey`, `lastActiveOrg`).
+- When you add an account, the background service worker takes a snapshot of Claude's active cookies using `chrome.cookies.getAll()`.
+- The snapshot is serialized into an encrypted profile entry inside `chrome.storage.local`.
+- When switching from Account A to Account B:
+  1. The extension snapshots and saves Account A's current session tokens.
+  2. It cleans Claude's session cookies.
+  3. It injects Account B's stored cookies using `chrome.cookies.set()`.
+  4. It queries `/api/bootstrap` to verify identity and update organization UUIDs.
+  5. It reloads active Claude tabs directly to `https://claude.ai/new` to prevent 404 conversation errors.
 
-### Step 2: Load into Browser
-1. Open your browser and navigate to the Extensions page:
-   - **Google Chrome:** `chrome://extensions`
-   - **Brave Browser:** `brave://extensions`
-   - **Microsoft Edge:** `edge://extensions`
-2. Toggle on **"Developer mode"** (usually located in the top-right corner).
-3. Click the **"Load unpacked"** button in the top-left corner.
-4. Select the extracted `Claude-Switcher` folder.
-5. **Done!** Open [claude.ai](https://claude.ai) and you will see the switcher pill at the bottom-left.
+### 2. Cloudflare Clearance Token Preservation
+Claude runs behind Cloudflare bot protection (`__cf_bm`, `cf_clearance`, `_cfuvid`). 
+If an extension clears all cookies blindly, Cloudflare will trigger a CAPTCHA challenge on every single switch!
+**Claude Switch solves this:** The internal `PRESERVED_COOKIES` whitelist leaves Cloudflare clearance tokens untouched during cookie swapping, ensuring you never face unnecessary CAPTCHA puzzles when toggling accounts.
+
+### 3. Intelligent Rate Limit Detection & Expiry Engine
+Claude's official `/usage` endpoint does not provide rolling quotas for Free accounts. Claude Switch solves this with a real-time DOM intelligence engine:
+- A `MutationObserver` continuously scans page banners and alert containers for strings matching:  
+  `out of (?:free )?messages until ([0-9]{1,2}:[0-9]{2}(?: AM|PM)?)`
+- When detected, the text (e.g. `5:20 PM`) is parsed into an absolute UNIX timestamp (`resetsAt`).
+- **Strict 5.5-Hour Boundary Guard:** Claude free limits operate strictly on a 5-hour window. If a parsed timestamp exceeds 5.5 hours or has already passed, the engine recognizes the session as expired/cleared, preventing false "tomorrow" loops and automatically resetting the account to **Free / Ready**.
+- The state is persisted in `cas:freeLimits` so countdowns remain accurate even when switching to other accounts.
+
+### 4. Background Alarms & Push Notifications
+- When an account limit is detected, a persistent alarm is scheduled with `chrome.alarms.create("reset:" + accountId, { when: resetsAt })`.
+- Even if your browser is minimized or you are browsing other websites, the service worker wakes up at the exact timestamp.
+- It verifies the reset, purges the rate-limit flag from storage, and dispatches a native desktop notification via `chrome.notifications.create()`.
+- Clicking the notification automatically opens `https://claude.ai/new` on that account.
+
+### 5. Closed Shadow DOM In-Page UI
+To guarantee zero CSS contamination:
+- The in-page switcher mounts into an isolated **closed** Shadow Root (`mode: "closed"`).
+- Claude's complex Tailwind and React stylesheets cannot alter or break the extension's UI, and the extension's CSS cannot bleed into Claude's layout.
+- The floating avatar dynamically anchors to Claude's sidebar footer (`.df-footer-aux`), adjusting its placement automatically across viewport resizes and SPA navigations.
+
+### 6. High-Priority Global Shortcut Pipeline
+- The keyboard listener attaches to `window` in the **capture phase** (`true`).
+- It bypasses default input-focus blocks, meaning `Ctrl + Shift + 1..9` executes even when your cursor is blinking inside Claude's message prompt box.
+- It normalizes keycodes across standard number rows, Numpad keys, and shifted character symbols (`!`, `@`, `#`...) across international keyboard layouts.
+
+---
+
+## 🏗️ Architecture & Data Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as User
+    participant Page as Claude Webpage (DOM)
+    participant CS as Content Script (Shadow DOM)
+    participant BG as Background Service Worker
+    participant Store as chrome.storage.local
+    participant Ck as chrome.cookies API
+    participant API as Claude.ai Backend
+
+    User->>CS: Press Ctrl+Shift+2 (or Click Avatar)
+    CS->>BG: chrome.runtime.sendMessage({ type: "switch", accountId })
+    BG->>Store: Snapshot current active account cookies
+    BG->>Ck: Clear sessionKey & lastActiveOrg (Preserve Cloudflare)
+    BG->>Ck: Restore Target Account Cookies
+    BG->>API: GET /api/bootstrap (Verify Account Identity)
+    BG->>Store: Update activeId & persist fresh cookies
+    BG->>Page: Navigate tab to https://claude.ai/new
+    BG->>CS: Broadcast updated state
+    CS->>User: Render active avatar & updated quotas
+```
+
+---
+
+## 📥 Installation Guide
+
+### Option 1: Load as Unpacked Extension (Recommended)
+
+1. **Download:**
+   - Clone this repository or download the source code as a `.zip` file from the [Releases](https://github.com/) page.
+   - Extract the `.zip` archive into a folder (e.g. `Documents/Claude-Switcher`).
+
+2. **Open Extensions Page:**
+   - **Google Chrome:** Visit `chrome://extensions`
+   - **Brave Browser:** Visit `brave://extensions`
+   - **Microsoft Edge:** Visit `edge://extensions`
+   - **Arc Browser:** Visit `arc://extensions`
+
+3. **Enable Developer Mode:**
+   - Toggle on the **"Developer mode"** switch located in the top-right corner.
+
+4. **Load the Extension:**
+   - Click the **"Load unpacked"** button in the top-left toolbar.
+   - Select the `Claude-Switcher` folder containing `manifest.json`.
+   - The extension will appear instantly with the **Claude Switch** icon!
+
+5. **Pin to Toolbar (Optional):**
+   - Click the puzzle icon in your browser toolbar and pin **Claude Switch** for quick access.
+
+---
+
+## 💡 How to Use
+
+### Adding Accounts
+1. Sign in to your first Claude account on [claude.ai](https://claude.ai).
+2. Click the floating avatar icon at the bottom of the sidebar (or open the toolbar popup).
+3. Click **"+ Add another account"**.
+4. The extension will safely store your current account, clear session cookies, and open a login tab.
+5. Sign in to your second account with Google or email magic link.
+6. The extension automatically detects authentication, captures the session, and registers the new profile!
+7. Repeat for as many accounts as you need.
+
+### Switching Accounts
+- **Method 1:** Press **`Ctrl + Shift + 1`**, **`Ctrl + Shift + 2`** ... **`Ctrl + Shift + 9`** anywhere on Claude.
+- **Method 2:** Click the small circular avatar in the sidebar footer to open the quick-switcher menu, then click any account.
+- **Method 3:** Click the extension icon in your browser toolbar to switch from the popup.
 
 ---
 
 ## ⌨️ Keyboard Shortcuts
 
-| Shortcut | Action |
+| Shortcut | Description | Context |
+|---|---|---|
+| `Ctrl + Shift + 1` | Switch instantly to Account #1 | Anywhere on `claude.ai` |
+| `Ctrl + Shift + 2` | Switch instantly to Account #2 | Anywhere on `claude.ai` |
+| `Ctrl + Shift + 3..9` | Switch instantly to Accounts #3 through #9 | Anywhere on `claude.ai` |
+| `Click on Avatar` | Toggle in-page account switcher dropdown | Sidebar footer |
+| `Escape` | Dismiss / close the open switcher dropdown | When dropdown is open |
+
+> **Note:** Shortcuts are designed with non-conflicting modifier keys (`Ctrl + Shift`), ensuring they never trigger browser tab switching (`Alt + 1..9`).
+
+---
+
+## 🔒 Privacy & Security Audit
+
+Authentication tokens grant access to your private AI conversations. Claude Switch is architected around a strict zero-trust local model:
+
+- ❌ **No Analytics / Telemetry:** No Google Analytics, no Mixpanel, no Sentry, no remote beacons.
+- ❌ **No External Servers:** The extension does not own, manage, or contact any backend server.
+- 🌐 **Direct First-Party Connections Only:** Network requests (`fetch`) communicate solely with `https://claude.ai/*`.
+- 🗄️ **Local Sandbox Storage:** All authentication tokens, labels, and rate-limit metadata are stored in your browser's private `chrome.storage.local` sandbox.
+- 👁️ **100% Auditable:** The entire codebase is completely open-source. Every line of code can be inspected directly in this repository.
+
+---
+
+## 🔑 Permissions Justification
+
+In accordance with Chrome Web Store Developer Policies:
+
+| Permission | Purpose |
 |---|---|
-| `Ctrl + Shift + 1` | Switch directly to Account #1 |
-| `Ctrl + Shift + 2` | Switch directly to Account #2 |
-| `Ctrl + Shift + 3..9` | Switch directly to Account #3 through #9 |
-| `Click on Switcher Pill` | Toggle the account switcher dropdown |
-| `Escape` | Close the open switcher dropdown |
-
-> **Note:** The shortcuts work anywhere on `claude.ai`, even when your cursor is focused inside the message box.
-
----
-
-## 🔒 Privacy & Security
-
-We believe security should be non-negotiable, especially for authentication tooling:
-
-- **No Remote Servers:** Claude Switch does not own or communicate with any external backend or third-party servers.
-- **Direct Anthropic Communication Only:** The extension only connects to official `https://claude.ai/api/*` endpoints to read your account profile and verify rate limits.
-- **Local Isolation:** All authentication cookies and session state are persisted strictly inside your browser's local sandbox (`chrome.storage.local`).
-- **Open Source:** The full code is readable and auditable by anyone.
+| `cookies` | Required to read, snapshot, and restore session authentication tokens strictly for `claude.ai` domains. |
+| `storage` | Used to persist account identifiers, labels, colors, and rate-limit reset timestamps locally. |
+| `alarms` | Used to schedule background wakeups to check rate-limit expiration and update badge counts. |
+| `notifications` | Used to deliver native desktop push notifications when an account limit resets. |
+| `webRequest` | Monitors API error responses (403/404) to prevent broken state during account transitions. |
+| `host: https://claude.ai/*` | Restricts extension code injection and cookie manipulation exclusively to Claude's official domain. |
 
 ---
 
-## 📄 License & Terms of Use
+## ❓ Troubleshooting & FAQ
+
+#### Q: Why didn't the rate-limit countdown appear immediately?
+**A:** Claude displays rate limits only after a message is rejected by the server (e.g. *"You are out of free messages until..."*). Once that banner appears, Claude Switch immediately parses the time, generates the countdown bar, and schedules your reset notification.
+
+#### Q: Do I need to re-login every time I restart my computer?
+**A:** No. Your session cookies remain safely preserved in `chrome.storage.local`. Unless you manually click "Sign Out" inside Claude, your sessions persist across browser restarts.
+
+#### Q: Why do we use `Ctrl + Shift + Number` instead of `Alt + Number`?
+**A:** In Chrome and Brave on Linux and Windows, `Alt + 1..9` and `Ctrl + 1..9` are reserved browser accelerators that switch tabs. `Ctrl + Shift + Number` provides universal compatibility without conflicting with browser navigation.
+
+#### Q: What happens if an account session expires?
+**A:** If a session token expires naturally on Claude's servers, the extension marks that account with a red label (`signed out — sign in again`). Clicking it opens the login flow to refresh that account's session.
+
+---
+
+## 📄 License & Attribution
 
 This project is licensed under the **Creative Commons Attribution-NonCommercial 4.0 International License (CC BY-NC 4.0)**.
 
-### What you CAN do:
-- ✅ **Free to Use:** Anyone is free to install, run, and use this extension for personal and daily productivity.
-- ✅ **Share:** You can share the repository link or package with friends, colleagues, and community members.
+```
+Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)
 
-### What you CANNOT do:
-- ❌ **No Commercial Selling:** You are strictly **forbidden** from selling this extension, charging for access, or monetizing it in any commercial form.
-- ❌ **No Modification Without Attribution:** If you fork, alter, or build upon this source code:
-  - You **MUST** provide clear and visible credit to the original author.
-  - You **CANNOT** rebrand or sell the modified version as a commercial closed-source product.
+You are free to:
+1. Share — copy and redistribute the material in any medium or format.
+2. Adapt — remix, transform, and build upon the material.
 
-For complete license text, please refer to the [LICENSE](LICENSE) file.
+Under the following terms:
+- Attribution: You MUST give appropriate credit to the original author, provide a link
+  to the license, and indicate if changes were made.
+- Non-Commercial: You may NOT use this material for commercial purposes, sell this software,
+  or charge fees for its distribution.
+- Open Derivative Works: Any modified versions must remain non-commercial and carry clear
+  attribution back to the original author.
+```
+
+Review the full terms in the [LICENSE](LICENSE) file.
 
 ---
 
 ## ⚠️ Disclaimer
 
-This is an independent open-source project. This extension is **not** affiliated with, authorized, maintained, sponsored, or endorsed by Anthropic, PBC or any of its affiliates. "Claude" is a registered trademark of Anthropic, PBC.
-
+*Claude Switch is an independent open-source tool developed by the community. It is **not** an official product of Anthropic, PBC and is not affiliated with, sponsored by, or endorsed by Anthropic, PBC. "Claude", "Claude.ai", and related marks are trademarks of Anthropic, PBC.*

@@ -1086,9 +1086,85 @@ chrome.tabs.onUpdated.addListener((tabId, change) => rescue.onTabUpdated(tabId, 
 chrome.tabs.onRemoved.addListener((tabId) => rescue.onTabRemoved(tabId));
 void chrome.alarms.get(USAGE_ALARM).then((alarm) => alarm ? void 0 : chrome.alarms.create(USAGE_ALARM, { periodInMinutes: USAGE_PERIOD_MIN })).catch(() => console.warn("Could not schedule the usage refresh"));
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name !== USAGE_ALARM) return;
-  void refreshUsage(routerDeps, 0).then((fetched) => fetched ? broadcast() : void 0).catch(() => console.warn("Could not refresh usage"));
+  if (alarm.name === USAGE_ALARM) {
+    void refreshUsage(routerDeps, 0).then((fetched) => fetched ? broadcast() : void 0).catch(() => console.warn("Could not refresh usage"));
+    return;
+  }
+  if (alarm.name.startsWith("reset:")) {
+    const accountId = alarm.name.slice(6);
+    void notifyLimitReset(accountId);
+  }
 });
-var restoreBadge = () => void usage.updateBadge().catch(() => console.warn("Could not update the badge"));
+
+// Limit Reset Notification System
+var FREE_LIMITS_KEY = "cas:freeLimits";
+
+async function notifyLimitReset(accountId) {
+  try {
+    const s = await store.load();
+    const account = s.accounts[accountId];
+    if (!account) return;
+
+    const allLimits = (await chrome.storage.local.get(FREE_LIMITS_KEY))[FREE_LIMITS_KEY] || {};
+    if (allLimits[accountId]) {
+      delete allLimits[accountId];
+      await chrome.storage.local.set({ [FREE_LIMITS_KEY]: allLimits });
+    }
+
+    const nickname = account.label || account.name || "Claude";
+    const plan = account.plan || "Free";
+
+    chrome.notifications.create(`reset-notif-${accountId}-${Date.now()}`, {
+      type: "basic",
+      iconUrl: "icons/icon-128.png",
+      title: "Claude Switch",
+      message: `Your ${nickname} ${plan} claude account limit has been reset`,
+      priority: 2
+    });
+
+    await broadcast();
+  } catch (e) {
+    console.warn("Could not send limit reset notification", e);
+  }
+}
+
+async function scheduleLimitAlarms() {
+  try {
+    const allLimits = (await chrome.storage.local.get(FREE_LIMITS_KEY))[FREE_LIMITS_KEY] || {};
+    const nowMs = Date.now();
+    for (const [accountId, fl] of Object.entries(allLimits)) {
+      if (!fl || !fl.resetsAt) continue;
+      const alarmName = `reset:${accountId}`;
+      if (fl.resetsAt <= nowMs) {
+        if (!fl.notified) {
+          fl.notified = true;
+          await notifyLimitReset(accountId);
+        }
+      } else {
+        chrome.alarms.create(alarmName, { when: fl.resetsAt });
+      }
+    }
+  } catch (e) {
+    console.warn("Could not schedule limit alarms", e);
+  }
+}
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes[FREE_LIMITS_KEY]) {
+    void scheduleLimitAlarms();
+  }
+});
+
+chrome.notifications.onClicked.addListener((notifId) => {
+  if (notifId.startsWith("reset-notif-")) {
+    chrome.tabs.create({ url: "https://claude.ai/new" });
+  }
+});
+
+var restoreBadge = () => {
+  void usage.updateBadge().catch(() => console.warn("Could not update the badge"));
+  void scheduleLimitAlarms();
+};
 chrome.runtime.onStartup.addListener(restoreBadge);
 chrome.runtime.onInstalled.addListener(restoreBadge);
+void scheduleLimitAlarms();
