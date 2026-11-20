@@ -1,0 +1,48 @@
+{
+  "manifest_version": 3,
+  "name": "Claude Switch",
+  "short_name": "Claude Switch",
+  "version": "0.3.0",
+  "description": "Switch between multiple Claude.ai accounts instantly. See usage limits at a glance — open source, unofficial, not affiliated with Anthropic.",
+  "minimum_chrome_version": "120",
+  "permissions": [
+    "cookies",
+    "storage",
+    "alarms",
+    "webRequest"
+  ],
+  "host_permissions": [
+    "https://claude.ai/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Claude Switch",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://claude.ai/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
