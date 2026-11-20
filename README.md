@@ -2,6 +2,7 @@
 
 > **Instant, seamless multi-account switcher for Claude.ai with real-time rate limit tracking.**
 
+[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)]()
 [![Manifest V3](https://img.shields.io/badge/Manifest-V3-orange.svg)](https://developer.chrome.com/docs/extensions/mv3/intro/)
 [![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC_BY--NC_4.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc/4.0/)
 [![Compatible with Chromium](https://img.shields.io/badge/Browser-Chrome%20%7C%20Brave%20%7C%20Edge-brightgreen.svg)]()

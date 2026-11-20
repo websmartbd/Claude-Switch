@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Claude Switch",
   "short_name": "Claude Switch",
-  "version": "0.3.0",
+  "version": "1.0.0",
   "description": "Switch between multiple Claude.ai accounts instantly. See usage limits at a glance — open source, unofficial, not affiliated with Anthropic.",
   "minimum_chrome_version": "120",
   "permissions": [

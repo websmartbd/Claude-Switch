@@ -76,7 +76,13 @@
     const snap = s.usage[a.id];
     if (!snap || snap.limits.length === 0) {
       const fl = popupFreeLimits[a.id];
-      if (fl && fl.resetsAt && now < fl.resetsAt) {
+      if (fl && fl.resetsAt) {
+        const remainingMs = fl.resetsAt - now;
+        if (remainingMs <= 0 || remainingMs > 5.5 * 3600 * 1000) {
+          delete popupFreeLimits[a.id];
+          chrome.storage.local.set({ [FREE_LIMITS_KEY]: popupFreeLimits }).catch(() => void 0);
+          return "";
+        }
         return `<span class="usage" title="Free message limit reached"><span class="u crit"><span class="ul">limit</span> <span class="num">100%</span><span class="ubar"><i style="width:100%"></i></span></span><span class="asof"> \xB7 resets ${esc(fl.timeStr)}</span></span>`;
       }
       return "";

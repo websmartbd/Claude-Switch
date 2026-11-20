@@ -33,6 +33,7 @@
   var cachedFreeLimits = {};
 
   function parseTimeToday(timeStr) {
+    if (!timeStr) return null;
     const now = new Date();
     const m = /^(\d{1,2}):(\d{2})(?:\s*(AM|PM))?$/i.exec(timeStr.trim());
     if (!m) return null;
@@ -41,28 +42,71 @@
     const meridiem = m[3] ? m[3].toUpperCase() : null;
     if (meridiem === "PM" && hours < 12) hours += 12;
     if (meridiem === "AM" && hours === 12) hours = 0;
-    const target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes, 0, 0);
-    if (target.getTime() < now.getTime() - 2 * 60 * 1000) {
-      target.setDate(target.getDate() + 1);
+
+    let target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes, 0, 0);
+    let diff = target.getTime() - now.getTime();
+
+    // If target time is in the past, it could only be tomorrow if it crosses midnight within <= 5.5 hours
+    if (diff < 0) {
+      const tomorrowTarget = new Date(target.getTime() + 24 * 3600 * 1000);
+      const tomorrowDiff = tomorrowTarget.getTime() - now.getTime();
+      // Claude free limit window is strictly 5 hours
+      if (tomorrowDiff <= 5.5 * 3600 * 1000) {
+        target = tomorrowTarget;
+        diff = tomorrowDiff;
+      } else {
+        // It's in the past and has already expired!
+        return null;
+      }
     }
+
+    // A valid Claude free limit reset MUST be within 5.5 hours from now
+    if (diff > 5.5 * 3600 * 1000) {
+      return null;
+    }
+
     return target.getTime();
   }
 
   function detectPageRateLimit(doc) {
+    const alerts = doc.querySelectorAll('div[class*="banner"], div[role="alert"], div[class*="notice"], div[class*="error"], fieldset, form');
+    for (const el of alerts) {
+      const t = el.textContent || "";
+      const m = /out of (?:free )?messages until\s+([0-9]{1,2}:[0-9]{2}(?:\s*[AaPp][Mm])?)/i.exec(t)
+             || /(?:reached|exceeded) (?:your )?(?:free )?message limit until\s+([0-9]{1,2}:[0-9]{2}(?:\s*[AaPp][Mm])?)/i.exec(t)
+             || /(?:resets|try again)\s*(?:at|until)\s+([0-9]{1,2}:[0-9]{2}(?:\s*[AaPp][Mm])?)/i.exec(t);
+      if (m) return m[1].trim();
+    }
     const text = doc.body ? (doc.body.innerText || "") : "";
     if (!text) return null;
-    const m = /out of (?:free )?messages until\s+([0-9]{1,2}:[0-9]{2}(?:\s*(?:AM|PM))?)/i.exec(text)
-           || /(?:reached|exceeded) your (?:free )?message limit until\s+([0-9]{1,2}:[0-9]{2}(?:\s*(?:AM|PM))?)/i.exec(text)
-           || /(?:resets|try again)\s*(?:at|until)\s+([0-9]{1,2}:[0-9]{2}(?:\s*(?:AM|PM))?)/i.exec(text);
+    const m = /out of (?:free )?messages until\s+([0-9]{1,2}:[0-9]{2}(?:\s*[AaPp][Mm])?)/i.exec(text)
+           || /(?:reached|exceeded) (?:your )?(?:free )?message limit until\s+([0-9]{1,2}:[0-9]{2}(?:\s*[AaPp][Mm])?)/i.exec(text)
+           || /(?:resets|try again)\s*(?:at|until)\s+([0-9]{1,2}:[0-9]{2}(?:\s*[AaPp][Mm])?)/i.exec(text);
     return m ? m[1].trim() : null;
   }
 
   async function syncFreeLimit(activeId, doc, onDetected) {
     if (!activeId) return;
     const timeStr = detectPageRateLimit(doc);
-    if (!timeStr) return;
+    if (!timeStr) {
+      const fl = cachedFreeLimits[activeId];
+      if (fl && fl.resetsAt && Date.now() >= fl.resetsAt) {
+        delete cachedFreeLimits[activeId];
+        await chrome.storage.local.set({ [FREE_LIMITS_KEY]: cachedFreeLimits }).catch(() => void 0);
+        if (onDetected) onDetected();
+      }
+      return;
+    }
     const resetsAt = parseTimeToday(timeStr);
-    if (!resetsAt) return;
+    if (!resetsAt) {
+      // timeStr has already passed, clear it!
+      if (cachedFreeLimits[activeId]) {
+        delete cachedFreeLimits[activeId];
+        await chrome.storage.local.set({ [FREE_LIMITS_KEY]: cachedFreeLimits }).catch(() => void 0);
+        if (onDetected) onDetected();
+      }
+      return;
+    }
     const prev = cachedFreeLimits[activeId];
     if (prev && prev.timeStr === timeStr && Math.abs(prev.resetsAt - resetsAt) < 60000) return;
     cachedFreeLimits[activeId] = { timeStr, resetsAt, detectedAt: Date.now() };
@@ -96,8 +140,16 @@
       return { ring, bar };
     }
     const fl = cachedFreeLimits[accountId];
-    if (fl && fl.resetsAt && Date.now() < fl.resetsAt) {
-      const rst = fmtReset(fl.resetsAt, Date.now());
+    if (fl && fl.resetsAt) {
+      const nowMs = Date.now();
+      const remainingMs = fl.resetsAt - nowMs;
+      // If time has passed OR if remaining time > 5.5 hours (invalid/corrupted stale data), clear it immediately!
+      if (remainingMs <= 0 || remainingMs > 5.5 * 3600 * 1000) {
+        delete cachedFreeLimits[accountId];
+        chrome.storage.local.set({ [FREE_LIMITS_KEY]: cachedFreeLimits }).catch(() => void 0);
+        return { ring: "", bar: fallbackBar };
+      }
+      const rst = fmtReset(fl.resetsAt, nowMs);
       const ring = " lv-crit";
       const bar = `<span class="urow"><span class="ubar lv-crit" style="--p:100%"><i></i></span><span class="upct">100% \xB7 ${rst || fl.timeStr}</span></span>`;
       return { ring, bar };
@@ -195,9 +247,10 @@
   --cas-border: rgba(222,220,209,.14); --cas-text: #faf9f5; --cas-muted: #9c9a92; --cas-claude: #d97757; --cas-warn: #e5a83b; --cas-err: #ff6b80; } }
 [hidden] { display: none !important; }
 .cas-switch { position: fixed; z-index: 2147483646; color: var(--cas-text); font: inherit; }
-.pill { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px 0 4px; border-radius: 14px;
-  border: 0.5px solid var(--cas-border); background: var(--cas-surface); color: inherit; font: inherit; font-size: 12px; cursor: pointer; }
-.pill:hover { background: var(--cas-surface-2); }
+.pill { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border-radius: 50%;
+  border: 0.5px solid var(--cas-border); background: var(--cas-surface); color: inherit; font: inherit; cursor: pointer; transition: transform .12s, box-shadow .12s; }
+.pill:hover { background: var(--cas-surface-2); transform: scale(1.08); box-shadow: 0 2px 6px rgba(0,0,0,.15); }
+.pill .avatar { width: 22px; height: 22px; font-size: 11px; }
 .avatar { display: inline-grid; place-items: center; flex: none; width: 20px; height: 20px; border-radius: 50%; color: #fff; font-size: 10px; font-weight: 600; }
 .menu { position: absolute; bottom: 34px; left: 0; min-width: 240px; padding: 4px; border-radius: 12px; background: var(--cas-bg);
   border: 0.5px solid var(--cas-border); box-shadow: 0 12px 32px rgba(0,0,0,.25); }
@@ -299,15 +352,36 @@
     return null;
   }
   var PILL_HEIGHT = 28;
-  function placement(anchor, viewport) {
+  function placement(anchor, viewport, doc) {
     const floating = { mode: "floating", left: 12, top: viewport.height - 12 - PILL_HEIGHT };
+    
+    if (doc) {
+      const aux = doc.querySelector('.df-footer-aux, [class*="df-footer-aux"]');
+      if (aux) {
+        const ab = aux.getBoundingClientRect();
+        if (ab.width > 0 && ab.height > 0) {
+          const left = Math.round(ab.left - PILL_HEIGHT - 5);
+          const top = Math.max(8, Math.round(ab.top + ab.height / 2 - PILL_HEIGHT / 2));
+          return {
+            mode: "anchored",
+            left: Math.max(8, Math.min(left, viewport.width - PILL_HEIGHT - 8)),
+            top
+          };
+        }
+      }
+    }
+
     if (!anchor) return floating;
     const r = anchor.getBoundingClientRect();
     if (r.width === 0 && r.height === 0) return floating;
+
+    let left = r.right + 6;
+    let top = Math.max(8, Math.round(r.top + r.height / 2 - PILL_HEIGHT / 2));
+
     return {
       mode: "anchored",
-      left: Math.min(r.right + 6, viewport.width - 40),
-      top: Math.max(8, Math.round(r.top + r.height / 2 - PILL_HEIGHT / 2))
+      left: Math.max(8, Math.min(left, viewport.width - PILL_HEIGHT - 8)),
+      top
     };
   }
 
@@ -323,7 +397,7 @@
     let error = null;
     let unavailable = null;
     const reposition = () => {
-      const p = placement(findAnchor(doc), { width: win.innerWidth, height: win.innerHeight });
+      const p = placement(findAnchor(doc), { width: win.innerWidth, height: win.innerHeight }, doc);
       wrap.dataset.placement = p.mode;
       wrap.style.left = `${p.left}px`;
       wrap.style.top = `${p.top}px`;
@@ -355,7 +429,11 @@
         return `<button class="item" role="menuitem" data-action="${action}" data-id="${esc(a.id)}">${avEl}<span><span class="label">${esc(a.label)}</span>${subLine}</span>${right}</button>`;
       }).join("");
       const failure = error ? `<div class="hint err" role="alert">${esc(error)}</div>` : "";
-      wrap.innerHTML = `<button class="pill" data-action="toggle" aria-haspopup="menu" aria-expanded="${open}">${active ? avatarHtml(active.label, active.color) : ""}<span>${esc(active?.label ?? "Accounts")}</span><span aria-hidden="true">\u25BE</span></button><div class="menu" role="menu"${open ? "" : " hidden"}>${items}${failure}<div class="sep"></div><button class="item" data-action="add"><span></span><span>+ Add another account</span><span></span></button><div class="hint">Ctrl+Shift+1–9 switch</div></div>`;
+      const uInfo = active ? getUsageInfo(active.id, active.plan, s) : { ring: "" };
+      const _pbg = active ? ACCOUNT_COLORS[(active.color % 6 + 6) % 6] : "#c96442";
+      const _pinit = active ? (active.label.trim().charAt(0) || "?").toUpperCase() : "A";
+      const pillAvatar = `<span class="avatar${uInfo.ring}" style="background:${_pbg}" aria-hidden="true">${esc(_pinit)}</span>`;
+      wrap.innerHTML = `<button class="pill" data-action="toggle" title="${esc(active?.label ?? "Accounts")}" aria-label="Switch Account: ${esc(active?.label ?? "")}" aria-haspopup="menu" aria-expanded="${open}">${pillAvatar}</button><div class="menu" role="menu"${open ? "" : " hidden"}>${items}${failure}<div class="sep"></div><button class="item" data-action="add"><span></span><span>+ Add another account</span><span></span></button><div class="hint">Ctrl+Shift+1–9 switch</div></div>`;
       reposition();
     };
     const close = () => {
