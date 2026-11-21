@@ -56,29 +56,31 @@
     let target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes, 0, 0);
     let diff = target.getTime() - now.getTime();
 
-    if (isTomorrow || diff < 0) {
+    // BUG 1 FIX: Only add 24 hours if Claude explicitly stated "tomorrow".
+    // If the banner does not specify tomorrow and the time is already past (diff <= 0),
+    // it means the limit has already expired; do not roll it over into the next day.
+    if (isTomorrow) {
       target = new Date(target.getTime() + 24 * 3600 * 1000);
       diff = target.getTime() - now.getTime();
+      // If crossing midnight with a stale "tomorrow" banner made it > 24h away, adjust back 1 day
+      if (diff > 24 * 3600 * 1000) {
+        target = new Date(target.getTime() - 24 * 3600 * 1000);
+        diff = target.getTime() - now.getTime();
+      }
     }
 
-    if (diff > 24 * 3600 * 1000) {
-      target = new Date(target.getTime() - 24 * 3600 * 1000);
-      diff = target.getTime() - now.getTime();
-    }
-
-    if (diff < 0 || diff > 24 * 3600 * 1000) return null;
+    if (diff <= 0 || diff > 24 * 3600 * 1000) return null;
 
     return target.getTime();
   }
 
   function detectPageRateLimit(doc) {
-    // Priority 0 (most reliable): Claude rate limit message always contains a link to
-    // support.claude.com about usage/length limits. Find that anchor then read its container.
+    // Priority 0 (most reliable): Claude usage/length limits support link
     for (const a of doc.querySelectorAll('a[href*="understanding-usage-and-length-limits"], a[href*="support.claude.com"], a[href*="support.anthropic.com"]')) {
       let node = a.parentElement;
       for (let i = 0; i < 6 && node; i++, node = node.parentElement) {
         const t = (node.textContent || "").replace(/\s+/g, " ").trim();
-        if (/out of|limit|messages?|resets?|try again/i.test(t)) {
+        if (/out of|limit|messages?|resets?/i.test(t)) {
           const result = extractResetTime(t);
           if (result) return result;
         }
@@ -94,25 +96,16 @@
       }
     }
 
-    // Priority 2: disabled fieldset = input locked, look in surrounding container
-    for (const fs of doc.querySelectorAll("fieldset[disabled]")) {
+    // Priority 2: disabled fieldset / locked chat composer area
+    for (const fs of doc.querySelectorAll("fieldset[disabled], form[aria-disabled='true']")) {
       let node = fs.parentElement;
       for (let i = 0; i < 5 && node; i++, node = node.parentElement) {
         const t = (node.textContent || "").replace(/\s+/g, " ").trim();
         if (t.length > 2500) break;
-        const result = extractResetTime(t);
-        if (result) return result;
-      }
-    }
-
-    // Priority 3: short inline text nodes only (< 400 chars)
-    for (const el of doc.querySelectorAll("p, span, div")) {
-      if (el.children.length > 5) continue;
-      const t = (el.textContent || "").replace(/\s+/g, " ").trim();
-      if (t.length < 15 || t.length > 400) continue;
-      if (/out of (?:free )?messages|free message limit|try again|resets at|messages until/i.test(t)) {
-        const result = extractResetTime(t);
-        if (result) return result;
+        if (/out of (?:free\s+)?messages?|message limit/i.test(t)) {
+          const result = extractResetTime(t);
+          if (result) return result;
+        }
       }
     }
 
@@ -120,9 +113,14 @@
   }
 
   // Returns { time: "3:40 AM", tomorrow: true } or just "3:40 AM" string, or null
+  // BUG 2 FIX: Strictly require explicit rate-limit terminology to eliminate chat text false positives.
   function extractResetTime(raw) {
     if (!raw) return null;
     const t = raw.replace(/\s+/g, " ").trim();
+
+    // Must be clearly identified as a message limit notice
+    const isLimitNotice = /out of (?:free\s+)?messages?|(?:message|usage)\s+limit/i.test(t);
+    if (!isLimitNotice) return null;
 
     // 1. "out of [free] messages ... until [tomorrow] [at] HH:MM"
     let m = /(?:out of|no more)\s+(?:free\s+)?messages?[^.]*?until\s+(?:(tomorrow)\s+(?:at\s+)?)?([0-9]{1,2}:[0-9]{2}(?:\s*[AaPp][Mm])?)/i.exec(t);
@@ -138,20 +136,11 @@
       return isTomorrow ? { time: m[2].trim(), tomorrow: true } : m[2].trim();
     }
 
-    // 3. "resets / try again / available [at|until] [tomorrow] [at] HH:MM"
-    m = /(?:resets?|try again|available again|come back)\s+(?:at|after|until|on)?\s*(?:(tomorrow)\s+(?:at\s+)?)?([0-9]{1,2}:[0-9]{2}(?:\s*[AaPp][Mm])?)/i.exec(t);
+    // 3. "limit ... resets? [at|until] [tomorrow] [at] HH:MM"
+    m = /(?:resets?|available again)\s+(?:at|after|until|on)?\s*(?:(tomorrow)\s+(?:at\s+)?)?([0-9]{1,2}:[0-9]{2}(?:\s*[AaPp][Mm])?)/i.exec(t);
     if (m) {
       const isTomorrow = !!m[1];
       return isTomorrow ? { time: m[2].trim(), tomorrow: true } : m[2].trim();
-    }
-
-    // 4. Generic "until [tomorrow] [at] HH:MM" if limit/message is mentioned
-    if (/limit|messages?/i.test(t)) {
-      m = /until\s+(?:(tomorrow)\s+(?:at\s+)?)?([0-9]{1,2}:[0-9]{2}(?:\s*[AaPp][Mm])?)/i.exec(t);
-      if (m) {
-        const isTomorrow = !!m[1];
-        return isTomorrow ? { time: m[2].trim(), tomorrow: true } : m[2].trim();
-      }
     }
 
     return null;

@@ -90,7 +90,7 @@
         const remainingMs = fl.resetsAt - now;
         if (remainingMs <= 0 || remainingMs > 24 * 3600 * 1000) {
           delete popupFreeLimits[a.id];
-          chrome.storage.local.set({ [FREE_LIMITS_KEY]: popupFreeLimits }).catch(() => void 0);
+          void sendToBackground({ type: "freeLimit:clear", accountId: a.id }).catch(() => void 0);
           return "";
         }
         const resetStr = (typeof fl.timeStr === "string" ? fl.timeStr : fl.timeStr?.time) || formatReset(fl.resetsAt, now);
@@ -120,8 +120,11 @@
     const compat = s.compat && s.compat.usage ? `<div class="status muted">Usage numbers unavailable \u2014 Claude may have changed its API. Check for an update.</div>` : "";
     return top + status + compat + body + foot;
   }
-  function renderUnlock() {
-    return `<header class="head"><span class="title"><img class="logo" src="icons/icon-32.png" width="16" height="16" alt=""> Claude Switch</span></header><div class="pane"><p>Your saved sessions are locked. Enter your passphrase to switch accounts.</p><label class="field"><span class="muted">Passphrase</span><input class="input" id="vaultPass" type="password" autocomplete="off"></label><button class="btn primary block" data-action="vaultUnlock">Unlock</button></div>`;
+  function renderUnlock(v) {
+    if (v?.confirmReset) {
+      return `<header class="head"><span class="title"><img class="logo" src="icons/icon-32.png" width="16" height="16" alt=""> Claude Switch</span></header><div class="pane"><p class="err" style="font-weight:600">Erase all saved sessions?</p><p class="muted">If you forgot your passphrase, this will permanently remove all saved account sessions and reset the extension. You will need to sign in to your accounts again.</p><button class="btn danger block" data-action="vaultResetConfirm">Yes, erase sessions</button><button class="btn ghost block" data-action="vaultResetCancel">Cancel</button></div>`;
+    }
+    return `<header class="head"><span class="title"><img class="logo" src="icons/icon-32.png" width="16" height="16" alt=""> Claude Switch</span></header><div class="pane"><p>Your saved sessions are locked. Enter your passphrase to switch accounts.</p><label class="field"><span class="muted">Passphrase</span><input class="input" id="vaultPass" type="password" autocomplete="off"></label><button class="btn primary block" data-action="vaultUnlock">Unlock</button><hr class="divider" style="margin:4px 0"><button class="btn ghost danger block" data-action="vaultResetPrompt">Forgot passphrase? Erase sessions</button></div>`;
   }
   function renderAddIntro() {
     return `${head("Add account", true)}<div class="pane"><p>First we save the claude.ai account you're signed into (if any). Then claude.ai opens signed out, so you can sign in to another account with Google or email.</p><p class="muted">Open the email magic link in this Chrome profile.</p><button class="btn primary block" data-action="addStart">Open claude.ai login</button></div>`;
@@ -154,13 +157,13 @@
     const seg = (pref, options, current) => `<div class="seg" role="group" aria-label="${pref}">${options.map(([value, text]) => `<button data-action="pref" data-pref="${pref}" data-value="${value}" aria-pressed="${value === current}">${text}</button>`).join("")}</div>`;
     const toggle = (pref, label) => `<div class="prefrow"><span>${label}</span><button class="switch" role="switch" data-action="toggle" data-pref="${pref}" aria-checked="${s.prefs[pref]}" aria-label="${label}"></button></div>`;
     const v2 = s.vault || { enabled: false, locked: false };
-    const vaultControls = `<div class="prefrow"><span>Wrong-account helper <span class="muted">(extra permission)</span></span><button class="switch" role="switch" data-action="rescueToggle" aria-checked="${Boolean(s.rescue)}" aria-label="Wrong-account helper"></button></div>` + (v2.enabled ? `<div class="prefrow"><span>Passphrase protection: on</span><button class="btn ghost" data-action="vaultLock">Lock now</button></div><label class="field"><span class="muted">Passphrase (to turn off)</span><input class="input" id="vaultOff" type="password" autocomplete="off"></label><button class="btn block" data-action="vaultDisable">Turn off protection</button>` : `<label class="field"><span class="muted">Protect sessions with a passphrase (min 8 characters; if forgotten, you'll need to sign in again)</span><input class="input" id="vaultNew" type="password" autocomplete="new-password"></label><button class="btn primary block" data-action="vaultEnable">Turn on protection</button>`);
+    const vaultControls = `<div class="prefrow"><span>Wrong-account helper <span class="muted">(extra permission)</span></span><button class="switch" role="switch" data-action="rescueToggle" aria-checked="${Boolean(s.rescue)}" aria-label="Wrong-account helper"></button></div>` + (v2.enabled ? `<div class="prefrow"><span>Passphrase protection: on</span><button class="btn ghost" data-action="vaultLock">Lock now</button></div><label class="field"><span class="muted">Passphrase (to turn off)</span><input class="input" id="vaultOff" type="password" autocomplete="off"></label><button class="btn block" data-action="vaultDisable">Turn off protection</button>` : `<label class="field"><span class="muted">Protect sessions with a passphrase (min 8 characters)</span><input class="input" id="vaultNew" type="password" autocomplete="new-password" placeholder="Passphrase (min 8 chars)"></label><label class="field"><span class="muted">Confirm passphrase</span><input class="input" id="vaultConfirm" type="password" autocomplete="new-password" placeholder="Retype passphrase"></label><button class="btn primary block" data-action="vaultEnable">Turn on protection</button>`);
     return `${head("Manage", true)}<div class="pane">${rows || `<p class="muted">No accounts yet.</p>`}</div><hr class="divider"><div class="pane prefs"><div class="prefrow"><span>Theme</span>${seg("theme", [["system", "system"], ["dark", "dark"], ["light", "light"]], s.prefs.theme)}</div>${toggle("inPageSwitcher", "Switcher on claude.ai")}${toggle("badge", "Usage badge on the toolbar icon")}${vaultControls}<p class="muted note">${s.vault && s.vault.enabled ? "Saved sessions are encrypted (AES-256-GCM) on disk. While unlocked, the key stays in browser memory until you lock or close the browser." : "Saved sessions are stored unencrypted in this Chrome profile. Turn on passphrase protection above to encrypt them."} Removing an account only forgets it here; it doesn't log you out.</p></div>`;
   }
   var withBanner = (html, error) => error ? html.replace("</header>", () => `</header><div class="error" role="alert">${esc(error)}</div>`) : html;
   function render(s, v, now, localError = null) {
     const err = localError ?? s.error;
-    if (s.vault && s.vault.locked) return withBanner(renderUnlock(), err);
+    if (s.vault && s.vault.locked) return withBanner(renderUnlock(v), err);
     if (s.add.phase !== "idle") return withBanner(renderAdd(s), err);
     if (v.screen === "addIntro") return withBanner(renderAddIntro(), err);
     if (v.screen === "manage") return withBanner(renderManage(s, v), err);
@@ -298,8 +301,34 @@
             draw();
           }
           break;
-        case "vaultEnable":
-          fire({ type: "vault:enable", passphrase: root.querySelector("#vaultNew")?.value ?? "" });
+        case "vaultEnable": {
+          const p1 = root.querySelector("#vaultNew")?.value ?? "";
+          const p2 = root.querySelector("#vaultConfirm")?.value ?? "";
+          if (p1.length < 8) {
+            failure = "Passphrase must be at least 8 characters.";
+            draw();
+            break;
+          }
+          if (p1 !== p2) {
+            failure = "Passphrases do not match. Please retype.";
+            draw();
+            break;
+          }
+          failure = null;
+          fire({ type: "vault:enable", passphrase: p1 });
+          break;
+        }
+        case "vaultResetPrompt":
+          view.confirmReset = true;
+          draw();
+          break;
+        case "vaultResetCancel":
+          view.confirmReset = false;
+          draw();
+          break;
+        case "vaultResetConfirm":
+          view.confirmReset = false;
+          fire({ type: "vault:reset" });
           break;
         case "vaultUnlock":
           fire({ type: "vault:unlock", passphrase: root.querySelector("#vaultPass")?.value ?? "" });

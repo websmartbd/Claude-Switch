@@ -2,11 +2,11 @@
 
 > **The definitive multi-account switcher and rate-limit manager for Claude.ai. Seamlessly switch accounts in one click or keyboard shortcut, track quota resets in real time, and receive desktop notifications the moment your limits expire.**
 
-[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg?style=for-the-badge)](https://github.com/)
+[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg?style=for-the-badge)](https://github.com/websmartbd/Claude-Switch/releases/tag/v1.2.0)
 [![Manifest V3](https://img.shields.io/badge/Manifest-V3-orange.svg?style=for-the-badge)](https://developer.chrome.com/docs/extensions/mv3/intro/)
 [![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC_BY--NC_4.0-lightgrey.svg?style=for-the-badge)](https://creativecommons.org/licenses/by-nc/4.0/)
-[![Compatible with Chromium](https://img.shields.io/badge/Chromium-Chrome%20%7C%20Brave%20%7C%20Edge%20%7C%20Arc-brightgreen.svg?style=for-the-badge)]()
-[![Zero Telemetry](https://img.shields.io/badge/Telemetry-0%25%20(Local%20Only)-success.svg?style=for-the-badge)]()
+[![Compatible with Chromium](https://img.shields.io/badge/Chromium-Chrome%20%7C%20Brave%20%7C%20Edge%20%7C%20Arc-brightgreen.svg?style=for-the-badge)](https://github.com/websmartbd/Claude-Switch)
+[![Zero Telemetry](https://img.shields.io/badge/Telemetry-0%25%20(Local%20Only)-success.svg?style=for-the-badge)](https://github.com/websmartbd/Claude-Switch)
 
 ---
 
@@ -103,7 +103,7 @@ Claude's official `/usage` endpoint may not expose the Free-account message wind
 - A `MutationObserver` continuously scans page banners and alert containers for strings matching:  
   `out of (?:free )?messages until ([0-9]{1,2}:[0-9]{2}(?: AM|PM)?)`
 - When detected, the text (e.g. `5:20 PM`) is parsed into an absolute UNIX timestamp (`resetsAt`).
-- **Strict 5.5-Hour Boundary Guard:** Claude free limits operate strictly on a 5-hour window. If a parsed timestamp exceeds 5.5 hours or has already passed, the engine recognizes the session as expired/cleared, preventing false "tomorrow" loops and automatically resetting the account to **Free / Ready**.
+- **Intelligent Tomorrow-Aware Guard:** Claude free limits operate on dynamic rolling windows. If a banner states "tomorrow", the engine reliably calculates next-day timestamps up to 24 hours. Past timestamps without an explicit "tomorrow" indicator are treated as immediately expired, eliminating false future limits and phantom alarms.
 - The state is persisted in `cas:freeLimits` so countdowns remain accurate even when switching to other accounts.
 
 ### 4. Background Alarms & Push Notifications
@@ -218,7 +218,7 @@ Authentication tokens grant access to your private AI conversations. Claude Swit
 - ❌ **No Analytics / Telemetry:** No Google Analytics, no Mixpanel, no Sentry, no remote beacons.
 - ❌ **No External Servers:** The extension does not own, manage, or contact any backend server.
 - 🌐 **Direct First-Party Connections Only:** Network requests (`fetch`) communicate solely with `https://claude.ai/*`.
-- 🗄️ **Local Profile Storage:** Authentication cookies, labels, and rate-limit metadata are stored in `chrome.storage.local`. Cookies are plaintext unless you enable passphrase protection (see above). Even then, malware running as you while the vault is unlocked can still reach the key in memory; treat the browser profile as sensitive.
+- 🗄️ **Local Profile Storage & LevelDB Compaction:** Authentication cookies, labels, and rate-limit metadata are stored in `chrome.storage.local`. Optional AES-256-GCM passphrase encryption can be enabled in Manage. Note that on Chromium, previous unencrypted storage logs in LevelDB may persist on disk until Chromium's internal LevelDB compaction cycle completes. Even then, malware running as you while the vault is unlocked can still reach the key in memory; treat the browser profile as sensitive.
 - 👁️ **Source Available for Inspection:** The JavaScript extension files are included in this repository. The distributed files are bundled JavaScript; original TypeScript source maps and a complete TypeScript source tree are not included.
 
 ---

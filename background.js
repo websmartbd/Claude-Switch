@@ -903,7 +903,8 @@ var REQUEST_TYPES = {
   "vault:enable": true,
   "vault:unlock": true,
   "vault:lock": true,
-  "vault:disable": true
+  "vault:disable": true,
+  "vault:reset": true
 };
 var PAGE_REQUESTS = /* @__PURE__ */ new Set([
   "getState",
@@ -1044,6 +1045,8 @@ function createRouter(deps) {
         return mutate(() => vaultLock());
       case "vault:disable":
         return mutate(() => vaultDisable(req.passphrase));
+      case "vault:reset":
+        return mutate(() => vaultReset());
       case "freeLimit:clear":
         if (typeof req.accountId !== "string" || !req.accountId) return fail("Invalid account ID");
         await updateFreeLimit(req.accountId, null);
@@ -1232,6 +1235,21 @@ async function vaultDisable(passphrase) {
     await store.update(() => {
     });
     await chrome.storage.local.remove(VAULT_META_KEY);
+  } finally {
+    vaultDecommission = false;
+  }
+  await vaultLock();
+}
+async function vaultReset() {
+  await switcher.idle();
+  vaultDecommission = true;
+  try {
+    await store.update((s) => {
+      s.accounts = {};
+      s.order = [];
+      s.activeId = null;
+    });
+    await chrome.storage.local.remove([VAULT_META_KEY, FREE_LIMITS_KEY]);
   } finally {
     vaultDecommission = false;
   }
@@ -1452,8 +1470,13 @@ chrome.notifications.onClicked.addListener((notifId) => {
         try { return new URL(tab.url || "").pathname.replace(/\/$/, "") === "/new"; }
         catch { return false; }
       });
-      if (existingNewTab?.id !== void 0) await chrome.tabs.update(existingNewTab.id, { active: true });
-      else await chrome.tabs.create({ url: "https://claude.ai/new", active: true });
+      if (existingNewTab?.id !== void 0) {
+        await chrome.tabs.update(existingNewTab.id, { active: true });
+        if (existingNewTab.windowId !== void 0) await chrome.windows.update(existingNewTab.windowId, { focused: true }).catch(() => void 0);
+      } else {
+        const newTab = await chrome.tabs.create({ url: "https://claude.ai/new", active: true });
+        if (newTab?.windowId !== void 0) await chrome.windows.update(newTab.windowId, { focused: true }).catch(() => void 0);
+      }
     } else {
       await chrome.notifications.create(`switch-failed-${Date.now()}`, {
         type: "basic", iconUrl: "icons/icon-128.png", title: "Claude Switch",
