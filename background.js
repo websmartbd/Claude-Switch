@@ -70,7 +70,7 @@ function orderedAccounts(state) {
   return state.order.map((id) => state.accounts[id]).filter((a) => a !== void 0);
 }
 function toPublic(a) {
-  const { cookies: _cookies, ...rest } = a;
+  const { cookies: _cookies, cookiesEnc: _cookiesEnc, ...rest } = a;
   return rest;
 }
 function sanitizePrefs(p) {
@@ -248,7 +248,7 @@ function parseIdentity(json, preferredOrgUuid) {
   const account = json?.account;
   const uuid = str(account?.uuid);
   const email = str(account?.email_address);
-  if (!uuid || !email) throw new Error("Unexpected identity response: missing account uuid or email");
+  if (!uuid || !email) throw new Error("Claude's account API looks different from what this version of Claude Switch expects. Check for an update.");
   const memberships = Array.isArray(account?.memberships) ? account.memberships : [];
   const orgs = memberships.map((m) => m.organization).filter((o) => !!o && typeof o.uuid === "string");
   const chatOrgs = orgs.filter((o) => strs(o.capabilities).includes("chat"));
@@ -480,6 +480,7 @@ var Switcher = class {
     const { jar, store: store2, api, tabs, now: now2 } = this.deps;
     const target = await store2.get(accountId);
     if (!target) return { status: "error", accountId, message: "Unknown account" };
+    if (!Array.isArray(target.cookies)) return { status: "error", accountId, message: new VaultLockedError().message };
     if (!hasLiveSession(target.cookies, now2())) {
       await store2.setStatus(accountId, "signedOut");
       return { status: "signedOut", accountId };
@@ -826,6 +827,8 @@ var UsageService = class {
   }
   deps;
   serial = createSerialQueue();
+  /** "api" when Claude's usage endpoint answers in a way we can't read (likely an API change); else null. */
+  problem = null;
   async all() {
     const got = await this.deps.area.get(USAGE_KEY);
     return got[USAGE_KEY] ?? {};
@@ -859,10 +862,16 @@ var UsageService = class {
     let limits;
     try {
       limits = parseUsage(await this.deps.fetchUsage(active.orgUuid));
-    } catch {
+    } catch (e) {
+      if (!(e instanceof AuthError) && /answered 404|non-JSON/.test(e instanceof Error ? e.message : "")) this.problem = "api";
       return false;
     }
-    if (limits.length === 0) return false;
+    if (limits.length === 0) {
+      // Free accounts legitimately have no usage windows; a paid plan with none suggests the format changed.
+      this.problem = active.plan && active.plan !== "Free" ? "api" : null;
+      return false;
+    }
+    this.problem = null;
     const next = {};
     for (const { id } of orderedAccounts(s)) {
       const snap = all[id];
@@ -890,7 +899,11 @@ var REQUEST_TYPES = {
   "freeLimit:set": true,
   "freeLimit:clear": true,
   "rescue:get": true,
-  "rescue:openAs": true
+  "rescue:openAs": true,
+  "vault:enable": true,
+  "vault:unlock": true,
+  "vault:lock": true,
+  "vault:disable": true
 };
 var PAGE_REQUESTS = /* @__PURE__ */ new Set([
   "getState",
@@ -926,7 +939,10 @@ async function buildUiState(deps) {
     lastSwitch: deps.lastSwitch(),
     add: await deps.addFlow.state(),
     usage: usage2,
-    error: deps.lastError()
+    error: deps.lastError(),
+    vault: await vaultStatus(),
+    rescue: await chrome.permissions.contains({ permissions: ["webRequest"] }).catch(() => false),
+    compat: { usage: deps.usage.problem }
   };
 }
 async function broadcastPush(push) {
@@ -1005,10 +1021,29 @@ function createRouter(deps) {
           await deps.store.updatePrefs(req.patch);
           await deps.usage.updateBadge();
         });
-      case "freeLimit:set":
-        if (typeof req.accountId !== "string" || !req.accountId || !req.record || typeof req.record.resetsAt !== "number") return fail("Invalid free-limit record");
-        await updateFreeLimit(req.accountId, req.record);
+      case "freeLimit:set": {
+        // Sent from a claude.ai page, so treat it as untrusted input: known account, sane numbers, whitelisted fields only.
+        const r = req.record;
+        const nowMs = Date.now();
+        if (typeof req.accountId !== "string" || !req.accountId || !r || typeof r !== "object") return fail("Invalid free-limit record");
+        if (typeof r.resetsAt !== "number" || !Number.isFinite(r.resetsAt) || r.resetsAt < nowMs - 36e5 || r.resetsAt > nowMs + 48 * 36e5) return fail("Invalid free-limit record");
+        if (!await deps.store.get(req.accountId)) return fail("Unknown account");
+        const clean = {
+          timeStr: String(r.timeStr ?? "").slice(0, 32),
+          resetsAt: r.resetsAt,
+          detectedAt: typeof r.detectedAt === "number" && Number.isFinite(r.detectedAt) ? r.detectedAt : nowMs
+        };
+        await updateFreeLimit(req.accountId, clean);
         return ok(null);
+      }
+      case "vault:enable":
+        return mutate(() => vaultEnable(req.passphrase));
+      case "vault:unlock":
+        return mutate(() => vaultUnlock(req.passphrase));
+      case "vault:lock":
+        return mutate(() => vaultLock());
+      case "vault:disable":
+        return mutate(() => vaultDisable(req.passphrase));
       case "freeLimit:clear":
         if (typeof req.accountId !== "string" || !req.accountId) return fail("Invalid account ID");
         await updateFreeLimit(req.accountId, null);
@@ -1038,8 +1073,173 @@ function createRouter(deps) {
   };
 }
 
+// src/background/vault.ts  (added in 1.2.0: optional passphrase protection for saved sessions)
+var VAULT_META_KEY = "cas:vault";
+var VAULT_SESSION_KEY = "cas:vaultKey";
+var VAULT_ITERATIONS = 6e5;
+var MIN_PASSPHRASE = 8;
+var VERIFIER_TEXT = "claude-switch-vault-v1";
+var VaultLockedError = class extends Error {
+  constructor() {
+    super("Claude Switch is locked \u2014 open the toolbar popup and enter your passphrase.");
+    this.name = "VaultLockedError";
+  }
+};
+var b64 = {
+  enc: (buf) => {
+    const u = new Uint8Array(buf);
+    let out = "";
+    for (let i = 0; i < u.length; i++) out += String.fromCharCode(u[i]);
+    return btoa(out);
+  },
+  dec: (text) => Uint8Array.from(atob(text), (c) => c.charCodeAt(0))
+};
+var cachedKey = null;
+var vaultDecommission = false;
+async function readVaultMeta() {
+  const got = await chrome.storage.local.get(VAULT_META_KEY);
+  return got[VAULT_META_KEY] ?? null;
+}
+async function deriveRawKey(passphrase, saltB64, iterations) {
+  const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(passphrase), "PBKDF2", false, ["deriveBits"]);
+  return crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: b64.dec(saltB64), iterations }, base, 256);
+}
+var importAesKey = (raw) => crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+/** The unlocked key lives only in chrome.storage.session (memory; cleared when the browser closes). */
+async function currentKey() {
+  const got = await chrome.storage.session.get(VAULT_SESSION_KEY);
+  const rawB64 = got[VAULT_SESSION_KEY];
+  if (!rawB64) {
+    cachedKey = null;
+    return null;
+  }
+  if (cachedKey && cachedKey.raw === rawB64) return cachedKey.key;
+  const key = await importAesKey(b64.dec(rawB64));
+  cachedKey = { raw: rawB64, key };
+  return key;
+}
+async function aesEncrypt(key, plain) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(plain));
+  return { iv: b64.enc(iv), ct: b64.enc(ct) };
+}
+async function aesDecrypt(key, blob) {
+  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: b64.dec(blob.iv) }, key, b64.dec(blob.ct));
+  return new TextDecoder().decode(pt);
+}
+/**
+ * Storage area used by AccountStore. Only each account's `cookies` array is encrypted (stored as `cookiesEnc`).
+ * Locked state: accounts load with `cookies: null`; their ciphertext is kept untouched on write, and any attempt
+ * to write real cookies throws instead of silently storing them in the clear.
+ */
+var vaultArea = {
+  async get(key) {
+    const got = await chrome.storage.local.get(key);
+    const state = got[key];
+    if (key !== STORE_KEY || !state || typeof state !== "object" || !state.accounts) return got;
+    const aesKey = await currentKey();
+    for (const a of Object.values(state.accounts)) {
+      if (!a || a.cookiesEnc === void 0) continue;
+      if (!aesKey) {
+        a.cookies = null;
+        continue;
+      }
+      try {
+        a.cookies = JSON.parse(await aesDecrypt(aesKey, a.cookiesEnc));
+      } catch {
+        a.cookies = null;
+      }
+    }
+    return got;
+  },
+  async set(items) {
+    const state = items[STORE_KEY];
+    if (state === void 0) return chrome.storage.local.set(items);
+    const meta = vaultDecommission ? null : await readVaultMeta();
+    const aesKey = meta ? await currentKey() : null;
+    const out = structuredClone(state);
+    for (const a of Object.values(out.accounts ?? {})) {
+      if (a.cookies === null || a.cookies === void 0) {
+        delete a.cookies;
+        continue;
+      }
+      if (meta) {
+        if (!aesKey) throw new VaultLockedError();
+        a.cookiesEnc = await aesEncrypt(aesKey, JSON.stringify(a.cookies));
+        delete a.cookies;
+      } else {
+        delete a.cookiesEnc;
+      }
+    }
+    return chrome.storage.local.set({ ...items, [STORE_KEY]: out });
+  },
+  remove: (keys) => chrome.storage.local.remove(keys)
+};
+async function vaultStatus() {
+  const meta = await readVaultMeta();
+  if (!meta) return { enabled: false, locked: false };
+  return { enabled: true, locked: await currentKey() === null };
+}
+function checkPassphraseShape(passphrase) {
+  if (typeof passphrase !== "string" || passphrase.length < MIN_PASSPHRASE) {
+    throw new Error(`Use a passphrase of at least ${MIN_PASSPHRASE} characters`);
+  }
+}
+async function vaultEnable(passphrase) {
+  checkPassphraseShape(passphrase);
+  if (await readVaultMeta()) throw new Error("Passphrase protection is already on");
+  await switcher.idle();
+  const salt = b64.enc(crypto.getRandomValues(new Uint8Array(16)));
+  const raw = await deriveRawKey(passphrase, salt, VAULT_ITERATIONS);
+  const key = await importAesKey(raw);
+  const meta = { v: 1, kdf: "PBKDF2-SHA256", iterations: VAULT_ITERATIONS, salt, verifier: await aesEncrypt(key, VERIFIER_TEXT) };
+  await chrome.storage.session.set({ [VAULT_SESSION_KEY]: b64.enc(raw) });
+  await chrome.storage.local.set({ [VAULT_META_KEY]: meta });
+  try {
+    await store.update(() => {
+    });
+  } catch (e) {
+    await chrome.storage.local.remove(VAULT_META_KEY);
+    await chrome.storage.session.remove(VAULT_SESSION_KEY);
+    cachedKey = null;
+    throw e;
+  }
+}
+async function vaultUnlock(passphrase) {
+  if (typeof passphrase !== "string" || passphrase.length === 0) throw new Error("Enter your passphrase");
+  const meta = await readVaultMeta();
+  if (!meta) throw new Error("Passphrase protection is not turned on");
+  const raw = await deriveRawKey(passphrase, meta.salt, meta.iterations);
+  const key = await importAesKey(raw);
+  let ok = false;
+  try {
+    ok = await aesDecrypt(key, meta.verifier) === VERIFIER_TEXT;
+  } catch {
+    ok = false;
+  }
+  if (!ok) throw new Error("Wrong passphrase");
+  await chrome.storage.session.set({ [VAULT_SESSION_KEY]: b64.enc(raw) });
+}
+async function vaultLock() {
+  await chrome.storage.session.remove(VAULT_SESSION_KEY);
+  cachedKey = null;
+}
+async function vaultDisable(passphrase) {
+  await vaultUnlock(passphrase);
+  await switcher.idle();
+  vaultDecommission = true;
+  try {
+    await store.update(() => {
+    });
+    await chrome.storage.local.remove(VAULT_META_KEY);
+  } finally {
+    vaultDecommission = false;
+  }
+  await vaultLock();
+}
+
 // src/background/index.ts
-var store = new AccountStore(chrome.storage.local);
+var store = new AccountStore(vaultArea);
 var now = () => Date.now();
 var lastSwitch = null;
 var lastError = null;
@@ -1110,19 +1310,45 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 chrome.cookies.onChanged.addListener((info) => {
   void addFlow.onCookieChanged(info).catch(() => console.warn("Could not check the new claude.ai login"));
 });
-chrome.webRequest.onCompleted.addListener(
-  (d) => {
-    if (switcher.switchingTo || (lastSwitch && Date.now() - lastSwitch.at < 6000)) return;
-    void rescue.onApiCompleted(d, async (tabId) => (await chrome.tabs.get(tabId).catch(() => void 0))?.url).then(async (tabId) => {
-      if (tabId === null) return;
-      const info = await rescue.info(tabId);
-      if (!info) return;
-      const push = { type: "rescue:show", rescue: info };
-      await chrome.tabs.sendMessage(tabId, push).catch(() => void 0);
-    }).catch(() => console.warn("Could not check a claude.ai link"));
-  },
-  { urls: [CLAUDE_API_PATTERN], types: ["xmlhttprequest"] }
-);
+var onApiCompleted = (d) => {
+  if (switcher.switchingTo || (lastSwitch && Date.now() - lastSwitch.at < 6000)) return;
+  void rescue.onApiCompleted(d, async (tabId) => (await chrome.tabs.get(tabId).catch(() => void 0))?.url).then(async (tabId) => {
+    if (tabId === null) return;
+    const info = await rescue.info(tabId);
+    if (!info) return;
+    const push = { type: "rescue:show", rescue: info };
+    await chrome.tabs.sendMessage(tabId, push).catch(() => void 0);
+  }).catch(() => console.warn("Could not check a claude.ai link"));
+};
+// "webRequest" is an optional permission (1.2.0): the wrong-account helper only listens after the user turns it on.
+var rescueListening = false;
+function syncRescueListener() {
+  const api = chrome.webRequest;
+  if (rescueListening || !api || !api.onCompleted) return;
+  api.onCompleted.addListener(onApiCompleted, { urls: [CLAUDE_API_PATTERN], types: ["xmlhttprequest"] });
+  rescueListening = true;
+}
+function stopRescueListener() {
+  try {
+    chrome.webRequest?.onCompleted?.removeListener(onApiCompleted);
+  } catch {
+    console.warn("Could not stop the wrong-account helper");
+  }
+  rescueListening = false;
+}
+chrome.permissions.onAdded.addListener((p) => {
+  if (p.permissions?.includes("webRequest")) {
+    syncRescueListener();
+    pushState();
+  }
+});
+chrome.permissions.onRemoved.addListener((p) => {
+  if (p.permissions?.includes("webRequest")) {
+    stopRescueListener();
+    pushState();
+  }
+});
+syncRescueListener();
 chrome.tabs.onUpdated.addListener((tabId, change) => rescue.onTabUpdated(tabId, change));
 chrome.tabs.onRemoved.addListener((tabId) => rescue.onTabRemoved(tabId));
 void chrome.alarms.get(USAGE_ALARM).then((alarm) => alarm ? void 0 : chrome.alarms.create(USAGE_ALARM, { periodInMinutes: USAGE_PERIOD_MIN })).catch(() => console.warn("Could not schedule the usage refresh"));

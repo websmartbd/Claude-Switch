@@ -2,7 +2,7 @@
 
 > **The definitive multi-account switcher and rate-limit manager for Claude.ai. Seamlessly switch accounts in one click or keyboard shortcut, track quota resets in real time, and receive desktop notifications the moment your limits expire.**
 
-[![Version](https://img.shields.io/badge/version-1.1.1-blue.svg?style=for-the-badge)](https://github.com/)
+[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg?style=for-the-badge)](https://github.com/)
 [![Manifest V3](https://img.shields.io/badge/Manifest-V3-orange.svg?style=for-the-badge)](https://developer.chrome.com/docs/extensions/mv3/intro/)
 [![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC_BY--NC_4.0-lightgrey.svg?style=for-the-badge)](https://creativecommons.org/licenses/by-nc/4.0/)
 [![Compatible with Chromium](https://img.shields.io/badge/Chromium-Chrome%20%7C%20Brave%20%7C%20Edge%20%7C%20Arc-brightgreen.svg?style=for-the-badge)]()
@@ -85,7 +85,7 @@ Claude Switch achieves seamless switching through a combination of low-level Chr
 ### 1. Cookie Jar & Session Virtualization
 Claude.ai authenticates requests using HTTP-only session cookies (`sessionKey`, `lastActiveOrg`).
 - When you add an account, the background service worker takes a snapshot of Claude's active cookies using `chrome.cookies.getAll()`.
-- The snapshot is serialized into the extension's `chrome.storage.local` profile. **This is not encryption at rest**; anyone or any software with access to the same browser profile may be able to access these session credentials.
+- The snapshot is stored in the extension's `chrome.storage.local`. **By default this is NOT encrypted**; anyone or any software with access to the same browser profile may be able to read these session credentials. Since 1.2.0 you can turn on **passphrase protection** (Manage → Turn on protection): each account's cookies are then encrypted with AES-256-GCM (key derived from your passphrase with PBKDF2-SHA256, 600,000 iterations). The unlocked key is kept only in `chrome.storage.session` (browser memory) and is discarded when you click Lock or close the browser. If you forget the passphrase, saved sessions cannot be recovered; you sign in again.
 - When switching from Account A to Account B:
   1. The extension snapshots and saves Account A's current session tokens.
   2. It cleans Claude's session cookies.
@@ -218,7 +218,7 @@ Authentication tokens grant access to your private AI conversations. Claude Swit
 - ❌ **No Analytics / Telemetry:** No Google Analytics, no Mixpanel, no Sentry, no remote beacons.
 - ❌ **No External Servers:** The extension does not own, manage, or contact any backend server.
 - 🌐 **Direct First-Party Connections Only:** Network requests (`fetch`) communicate solely with `https://claude.ai/*`.
-- 🗄️ **Local Profile Storage:** Authentication cookies, labels, and rate-limit metadata are stored in `chrome.storage.local`. This is not a secure enclave or encryption-at-rest mechanism; treat the browser profile as sensitive.
+- 🗄️ **Local Profile Storage:** Authentication cookies, labels, and rate-limit metadata are stored in `chrome.storage.local`. Cookies are plaintext unless you enable passphrase protection (see above). Even then, malware running as you while the vault is unlocked can still reach the key in memory; treat the browser profile as sensitive.
 - 👁️ **Source Available for Inspection:** The JavaScript extension files are included in this repository. The distributed files are bundled JavaScript; original TypeScript source maps and a complete TypeScript source tree are not included.
 
 ---
@@ -233,7 +233,7 @@ In accordance with Chrome Web Store Developer Policies:
 | `storage` | Used to persist account identifiers, labels, colors, and rate-limit reset timestamps locally. |
 | `alarms` | Used to schedule background wakeups to check rate-limit expiration and update badge counts. |
 | `notifications` | Used to deliver native desktop push notifications when an account limit resets. |
-| `webRequest` | Monitors API error responses (403/404) to prevent broken state during account transitions. |
+| `webRequest` (optional) | Not granted at install. Requested only if you turn on the "Wrong-account helper" in Manage; it watches 403/404 responses from `claude.ai/api/*` to suggest the right account. Turn the toggle off to revoke it. |
 | `host: https://claude.ai/*` | Restricts extension code injection and cookie manipulation exclusively to Claude's official domain. |
 
 ---
@@ -283,6 +283,14 @@ Review the full terms in the [LICENSE](LICENSE) file.
 *Claude Switch is an independent open-source tool developed by the community. It is **not** an official product of Anthropic, PBC and is not affiliated with, sponsored by, or endorsed by Anthropic, PBC. "Claude", "Claude.ai", and related marks are trademarks of Anthropic, PBC.*
 
 
+## 1.2.0 security update
+
+- **Optional passphrase protection** for saved sessions (AES-256-GCM, PBKDF2-SHA256 600k iterations). Locked state blocks switching, never writes cookies in the clear, and keeps ciphertext intact while you rename/reorder accounts. Turn it off any time with your passphrase.
+- **`webRequest` is now an optional permission**, requested only when you enable the Wrong-account helper. Fresh installs no longer carry that permission warning.
+- **Untrusted-input hardening:** `freeLimit:set` (sent from the claude.ai page) now requires a known account, a sane reset time, and stores only whitelisted, length-capped fields.
+- **Compatibility signals:** a clear error when Claude's identity API changes shape, and a popup notice when a paid account's usage endpoint can no longer be read. The in-page pill already falls back to other anchors / a floating position if Claude's sidebar markup changes.
+- Note: these changes were made directly in the shipped JavaScript. If you maintain the original TypeScript sources, port them back or the next build will drop them.
+
 ## 1.1.1 maintenance update
 
 - Persists cookie `storeId` and `partitionKey` metadata when the browser exposes them, so restoration receives the same context.
@@ -291,7 +299,7 @@ Review the full terms in the [LICENSE](LICENSE) file.
 - Rejects invalid clock values, removes the broad `body.innerText` fallback, and ignores synthetic clicks/keyboard events in the in-page controls.
 - Serializes free-limit writes through the background worker to prevent multi-tab cache overwrites, persists notification state, and clears stale reset alarms.
 - Caps the popup height at 590px.
-- Security note: cookies remain sensitive session credentials in local Chrome profile storage. This project does not provide encryption-at-rest.
+- Security note (1.1.1): cookies were stored unencrypted. Encryption is available as an opt-in feature from 1.2.0.
 
 ## Testing notes
 

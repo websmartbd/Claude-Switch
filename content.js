@@ -490,6 +490,12 @@
         wrap.hidden = true;
         return;
       }
+      if (state.vault && state.vault.locked) {
+        wrap.hidden = false;
+        wrap.innerHTML = `<button class="pill" disabled role="alert"><span>Locked \u2014 open Claude Switch</span></button>`;
+        reposition();
+        return;
+      }
       wrap.hidden = false;
       const s = state;
       const active = s.accounts.find((a) => a.id === s.activeId);
