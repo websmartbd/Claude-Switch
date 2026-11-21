@@ -2,7 +2,7 @@
 
 > **The definitive multi-account switcher and rate-limit manager for Claude.ai. Seamlessly switch accounts in one click or keyboard shortcut, track quota resets in real time, and receive desktop notifications the moment your limits expire.**
 
-[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg?style=for-the-badge)](https://github.com/websmartbd/Claude-Switch/releases/tag/v1.2.0)
+[![Version](https://img.shields.io/badge/version-1.2.1-blue.svg?style=for-the-badge)](https://github.com/websmartbd/Claude-Switch/releases/tag/v1.2.1)
 [![Manifest V3](https://img.shields.io/badge/Manifest-V3-orange.svg?style=for-the-badge)](https://developer.chrome.com/docs/extensions/mv3/intro/)
 [![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC_BY--NC_4.0-lightgrey.svg?style=for-the-badge)](https://creativecommons.org/licenses/by-nc/4.0/)
 [![Compatible with Chromium](https://img.shields.io/badge/Chromium-Chrome%20%7C%20Brave%20%7C%20Edge%20%7C%20Arc-brightgreen.svg?style=for-the-badge)](https://github.com/websmartbd/Claude-Switch)
@@ -282,6 +282,15 @@ Review the full terms in the [LICENSE](LICENSE) file.
 
 *Claude Switch is an independent open-source tool developed by the community. It is **not** an official product of Anthropic, PBC and is not affiliated with, sponsored by, or endorsed by Anthropic, PBC. "Claude", "Claude.ai", and related marks are trademarks of Anthropic, PBC.*
 
+
+## 1.2.1 patch release
+
+- **Rate limit detection accuracy:** `parseTimeToday` strictly validates whether Claude specified "tomorrow"; expired limits during the same day are correctly marked as elapsed instead of rolling over to tomorrow.
+- **Chat false-positive prevention:** `extractResetTime` strictly checks for explicit limit phrases (`out of messages`, `usage limit`, etc.) before matching time patterns, preventing normal conversations containing times from falsely triggering limit states.
+- **Passphrase recovery:** Added emergency session erase option ("Forgot passphrase? Erase sessions") when vault is locked and passphrase is lost.
+- **Passphrase confirmation:** Added confirm passphrase input field during vault setup to prevent accidental lockout from typos.
+- **Concurrency fix in popup:** Switched free-limit manual clearing in popup from direct storage overwrites to the background message queue (`freeLimit:clear`).
+- **Window focus:** Clicking desktop reset notifications now brings the browser window to the foreground (`chrome.windows.update` with `focused: true`).
 
 ## 1.2.0 security update
 
